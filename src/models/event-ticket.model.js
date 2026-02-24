@@ -61,7 +61,11 @@ const eventTicketSchema = new Schema(
     paymentReference: {
       type: String,
       trim: true,
-      default: null,
+      default: undefined,
+      set: (value) => {
+        const normalized = String(value || "").trim();
+        return normalized || undefined;
+      },
       unique: true,
       sparse: true,
     },

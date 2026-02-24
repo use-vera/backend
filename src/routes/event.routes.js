@@ -23,6 +23,7 @@ const {
   listMyEventsController,
   getEventController,
   updateEventController,
+  deleteEventController,
   initializeTicketPurchaseController,
   verifyTicketPaymentController,
   checkInTicketController,
@@ -67,6 +68,11 @@ router.patch(
   validateParams(eventIdParamsSchema),
   validateBody(updateEventSchema),
   updateEventController,
+);
+router.delete(
+  "/:eventId",
+  validateParams(eventIdParamsSchema),
+  deleteEventController,
 );
 router.post(
   "/:eventId/tickets/initialize",

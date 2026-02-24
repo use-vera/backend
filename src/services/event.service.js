@@ -543,6 +543,14 @@ const buildTicketCode = async () => {
   throw new ApiError(500, "Could not generate ticket code");
 };
 
+const isDuplicateKeyError = (error) => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  return Number(error.code) === 11000;
+};
+
 const parsePaystackEnvelope = async (response) => {
   const rawText = await response.text();
 
@@ -893,6 +901,38 @@ const updateEvent = async ({
   return event;
 };
 
+const deleteEvent = async ({ eventId, actorUserId }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  const activeTickets = await EventTicket.countDocuments({
+    eventId: event._id,
+    status: { $in: ["pending", "paid", "used"] },
+  });
+
+  if (activeTickets > 0) {
+    throw new ApiError(
+      409,
+      "This event already has active tickets. Cancel it instead of deleting.",
+    );
+  }
+
+  await Promise.all([
+    Event.deleteOne({ _id: event._id }),
+    EventTicket.deleteMany({ eventId: event._id }),
+  ]);
+
+  return {
+    eventId: String(event._id),
+    deleted: true,
+  };
+};
+
 const countReservedTickets = async (eventId) => {
   const pendingCutoff = new Date(Date.now() - 30 * 60 * 1000);
 
@@ -960,12 +1000,6 @@ const initializeTicketPurchase = async ({
     throw new ApiError(400, "Attendee email is required");
   }
 
-  const ticketCode = await buildTicketCode();
-  const barcodeValue = JSON.stringify({
-    provider: "vera",
-    ticketCode,
-    eventId: String(event._id),
-  });
   const shouldBypassPaystack =
     event.isPaid && !env.paystackSecretKey && env.paystackDevBypass;
 
@@ -976,24 +1010,58 @@ const initializeTicketPurchase = async ({
     );
   }
 
-  const baseTicket = await EventTicket.create({
-    eventId: event._id,
-    workspaceId: event.workspaceId || null,
-    organizerUserId: event.organizerUserId,
-    buyerUserId: actorUserId,
-    quantity,
-    unitPriceNaira,
-    totalPriceNaira,
-    currency: "NGN",
-    status: event.isPaid && !shouldBypassPaystack ? "pending" : "paid",
-    paymentProvider: event.isPaid && !shouldBypassPaystack ? "paystack" : "none",
-    attendeeName: String(payload.attendeeName || buyer.fullName || "").trim(),
-    attendeeEmail,
-    ticketCode,
-    barcodeValue,
-    paidAt: event.isPaid && !shouldBypassPaystack ? null : new Date(),
-    verifiedAt: event.isPaid && !shouldBypassPaystack ? null : new Date(),
-  });
+  let baseTicket = null;
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const ticketCode = await buildTicketCode();
+    const barcodeValue = JSON.stringify({
+      provider: "vera",
+      ticketCode,
+      eventId: String(event._id),
+    });
+
+    try {
+      baseTicket = await EventTicket.create({
+        eventId: event._id,
+        workspaceId: event.workspaceId || null,
+        organizerUserId: event.organizerUserId,
+        buyerUserId: actorUserId,
+        quantity,
+        unitPriceNaira,
+        totalPriceNaira,
+        currency: "NGN",
+        status: event.isPaid && !shouldBypassPaystack ? "pending" : "paid",
+        paymentProvider: event.isPaid && !shouldBypassPaystack ? "paystack" : "none",
+        attendeeName: String(payload.attendeeName || buyer.fullName || "").trim(),
+        attendeeEmail,
+        ticketCode,
+        barcodeValue,
+        paidAt: event.isPaid && !shouldBypassPaystack ? null : new Date(),
+        verifiedAt: event.isPaid && !shouldBypassPaystack ? null : new Date(),
+      });
+      break;
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) {
+        throw error;
+      }
+
+      const duplicateFields = Object.keys(error.keyPattern || {});
+      const duplicateMessage = String(error.message || "").toLowerCase();
+      const isTicketCodeDuplicate =
+        duplicateFields.includes("ticketCode") ||
+        duplicateMessage.includes("ticketcode");
+
+      if (isTicketCodeDuplicate) {
+        continue;
+      }
+
+      throw new ApiError(409, "Could not issue ticket due to duplicate data");
+    }
+  }
+
+  if (!baseTicket) {
+    throw new ApiError(500, "Could not issue ticket. Please try again.");
+  }
 
   if (!event.isPaid || shouldBypassPaystack) {
     return {
@@ -1039,7 +1107,21 @@ const initializeTicketPurchase = async ({
     throw error;
   }
 
-  baseTicket.paymentReference = String(paymentData.reference || "").trim();
+  const paystackReference = String(paymentData.reference || "").trim();
+
+  if (!paystackReference) {
+    baseTicket.status = "cancelled";
+    baseTicket.cancelledAt = new Date();
+    baseTicket.paymentMetadata = {
+      ...(baseTicket.paymentMetadata || {}),
+      initializePayload: paymentData,
+      initializeError: "Missing payment reference from Paystack",
+    };
+    await baseTicket.save();
+    throw new ApiError(502, "Paystack did not return a valid payment reference");
+  }
+
+  baseTicket.paymentReference = paystackReference;
   baseTicket.paymentAuthorizationUrl = String(
     paymentData.authorization_url || "",
   ).trim();
@@ -1470,6 +1552,7 @@ module.exports = {
   listMyEvents,
   getEventById,
   updateEvent,
+  deleteEvent,
   initializeTicketPurchase,
   verifyTicketPayment,
   checkInTicket,

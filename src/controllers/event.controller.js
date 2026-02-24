@@ -5,6 +5,7 @@ const {
   listMyEvents,
   getEventById,
   updateEvent,
+  deleteEvent,
   initializeTicketPurchase,
   verifyTicketPayment,
   checkInTicket,
@@ -86,6 +87,19 @@ const updateEventController = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: "Event updated",
+    data: result,
+  });
+});
+
+const deleteEventController = asyncHandler(async (req, res) => {
+  const result = await deleteEvent({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Event deleted",
     data: result,
   });
 });
@@ -185,6 +199,7 @@ module.exports = {
   listMyEventsController,
   getEventController,
   updateEventController,
+  deleteEventController,
   initializeTicketPurchaseController,
   verifyTicketPaymentController,
   checkInTicketController,
