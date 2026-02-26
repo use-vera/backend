@@ -18,7 +18,33 @@ const conversationIdParamsSchema = z.object({
   conversationId: objectIdSchema,
 });
 
-const sendDirectMessageSchema = z.object({
+const sendDirectMessageSchema = z
+  .object({
+    message: z.string().trim().max(1200).optional(),
+    messageType: z.enum(["text", "ticket", "event"]).optional(),
+    metadata: z.record(z.string(), z.any()).optional(),
+    replyToMessageId: objectIdSchema.optional(),
+    forwardedFromMessageId: objectIdSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const hasMessage = Boolean(String(value.message || "").trim());
+    const type = String(value.messageType || "text");
+
+    if (!hasMessage && type === "text") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["message"],
+        message: "message is required for text chat",
+      });
+    }
+  });
+
+const messageIdParamsSchema = z.object({
+  conversationId: objectIdSchema,
+  messageId: objectIdSchema,
+});
+
+const updateDirectMessageSchema = z.object({
   message: z.string().trim().min(1).max(1200),
 });
 
@@ -26,5 +52,7 @@ module.exports = {
   paginationQuerySchema,
   startDirectConversationSchema,
   conversationIdParamsSchema,
+  messageIdParamsSchema,
   sendDirectMessageSchema,
+  updateDirectMessageSchema,
 };

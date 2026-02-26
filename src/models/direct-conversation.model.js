@@ -45,6 +45,26 @@ const directConversationSchema = new Schema(
       ref: "User",
       default: null,
     },
+    unreadCountByUser: {
+      type: Map,
+      of: Number,
+      default: {},
+    },
+    lastReadAtByUser: {
+      type: Map,
+      of: Date,
+      default: {},
+    },
+    lastNudgeAtByUser: {
+      type: Map,
+      of: Date,
+      default: {},
+    },
+    lastNudgedCountByUser: {
+      type: Map,
+      of: Number,
+      default: {},
+    },
   },
   {
     timestamps: true,
@@ -62,16 +82,35 @@ directConversationSchema.index({ participants: 1, updatedAt: -1 });
 autoNormalizeParticipants(directConversationSchema);
 
 function autoNormalizeParticipants(schema) {
+  const objectIdRegex = /^[a-fA-F0-9]{24}$/;
+  const normalizeParticipant = (value) => {
+    if (!value) {
+      return "";
+    }
+
+    if (typeof value === "string") {
+      return value.trim();
+    }
+
+    if (typeof value === "object" && value._id) {
+      return String(value._id).trim();
+    }
+
+    return String(value).trim();
+  };
+
   schema.pre("validate", function normalize(next) {
     if (!Array.isArray(this.participants)) {
       next();
       return;
     }
 
-    this.participants = this.participants
-      .map((item) => String(item))
-      .sort()
-      .map((item) => item);
+    this.participants = [...new Set(
+      this.participants
+        .map((item) => normalizeParticipant(item))
+        .map((item) => (objectIdRegex.test(item) ? item : ""))
+        .filter(Boolean),
+    )].sort();
 
     if (!this.directKey && this.participants.length === 2) {
       this.directKey = `${this.participants[0]}:${this.participants[1]}`;

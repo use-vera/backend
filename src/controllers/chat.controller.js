@@ -3,8 +3,11 @@ const {
   createOrGetDirectConversation,
   listDirectMessages,
   sendDirectMessage,
+  updateDirectMessage,
+  deleteDirectMessage,
   listChatThreads,
   discoverChatUsers,
+  getChatUnreadSummary,
 } = require("../services/chat.service");
 const {
   emitDirectMessageCreated,
@@ -36,6 +39,18 @@ const discoverChatUsersController = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: "Users fetched",
+    data: result,
+  });
+});
+
+const getChatUnreadSummaryController = asyncHandler(async (req, res) => {
+  const result = await getChatUnreadSummary({
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Unread summary fetched",
     data: result,
   });
 });
@@ -72,7 +87,7 @@ const sendDirectMessageController = asyncHandler(async (req, res) => {
   const result = await sendDirectMessage({
     actorUserId: req.auth.userId,
     conversationId: req.params.conversationId,
-    message: req.body.message,
+    payload: req.body,
   });
 
   emitDirectMessageCreated({
@@ -90,10 +105,58 @@ const sendDirectMessageController = asyncHandler(async (req, res) => {
   });
 });
 
+const updateDirectMessageController = asyncHandler(async (req, res) => {
+  const result = await updateDirectMessage({
+    actorUserId: req.auth.userId,
+    conversationId: req.params.conversationId,
+    messageId: req.params.messageId,
+    payload: req.body,
+  });
+
+  emitDirectMessageCreated({
+    conversationId: String(result.conversation._id),
+    message: result.message,
+    participantUserIds: (result.conversation.participants || []).map(
+      (participant) => String(participant?._id || participant),
+    ),
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Message updated",
+    data: result,
+  });
+});
+
+const deleteDirectMessageController = asyncHandler(async (req, res) => {
+  const result = await deleteDirectMessage({
+    actorUserId: req.auth.userId,
+    conversationId: req.params.conversationId,
+    messageId: req.params.messageId,
+  });
+
+  emitDirectMessageCreated({
+    conversationId: String(result.conversation._id),
+    message: result.message,
+    participantUserIds: (result.conversation.participants || []).map(
+      (participant) => String(participant?._id || participant),
+    ),
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Message unsent",
+    data: result,
+  });
+});
+
 module.exports = {
   listChatThreadsController,
   discoverChatUsersController,
+  getChatUnreadSummaryController,
   startDirectConversationController,
   listDirectMessagesController,
   sendDirectMessageController,
+  updateDirectMessageController,
+  deleteDirectMessageController,
 };

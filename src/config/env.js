@@ -73,6 +73,15 @@ const env = {
     process.env.EVENT_REMINDER_TICK_MS,
     5 * 60 * 1000,
   ),
+  chatReminderEnabled: toBoolean(process.env.CHAT_REMINDER_ENABLED, true),
+  chatReminderTickMs: toNumber(
+    process.env.CHAT_REMINDER_TICK_MS,
+    5 * 60 * 1000,
+  ),
+  chatReminderDelayMinutes: toNumber(
+    process.env.CHAT_REMINDER_DELAY_MINUTES,
+    120,
+  ),
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || "",
   paystackBaseUrl:
     process.env.PAYSTACK_BASE_URL || "https://api.paystack.co",

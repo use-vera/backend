@@ -21,6 +21,42 @@ const eventChatMessageSchema = new Schema(
       minlength: 1,
       maxlength: 1200,
     },
+    messageType: {
+      type: String,
+      enum: ["text", "ticket", "event"],
+      default: "text",
+      index: true,
+    },
+    metadata: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
+    replyToMessageId: {
+      type: Schema.Types.ObjectId,
+      ref: "EventChatMessage",
+      default: null,
+      index: true,
+    },
+    forwardedFromMessageId: {
+      type: Schema.Types.ObjectId,
+      ref: "EventChatMessage",
+      default: null,
+      index: true,
+    },
+    editedAt: {
+      type: Date,
+      default: null,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
   },
   {
     timestamps: true,

@@ -262,7 +262,33 @@ const eventReminderSchema = z.object({
     .optional(),
 });
 
-const eventChatMessageBodySchema = z.object({
+const eventChatMessageBodySchema = z
+  .object({
+    message: z.string().trim().max(1200).optional(),
+    messageType: z.enum(["text", "ticket", "event"]).optional(),
+    metadata: z.record(z.string(), z.any()).optional(),
+    replyToMessageId: objectIdSchema.optional(),
+    forwardedFromMessageId: objectIdSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const hasMessage = Boolean(String(value.message || "").trim());
+    const type = String(value.messageType || "text");
+
+    if (!hasMessage && type === "text") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["message"],
+        message: "message is required for text chat",
+      });
+    }
+  });
+
+const eventChatMessageParamsSchema = z.object({
+  eventId: objectIdSchema,
+  messageId: objectIdSchema,
+});
+
+const updateEventChatMessageBodySchema = z.object({
   message: z.string().trim().min(1).max(1200),
 });
 
@@ -316,6 +342,8 @@ module.exports = {
   listEventFeedQuerySchema,
   eventReminderSchema,
   eventChatMessageBodySchema,
+  eventChatMessageParamsSchema,
+  updateEventChatMessageBodySchema,
   eventChatQuerySchema,
   createEventPostSchema,
   listEventPostsQuerySchema,

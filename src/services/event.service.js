@@ -11,6 +11,7 @@ const EventReminderPreference = require("../models/event-reminder-preference.mod
 const Membership = require("../models/membership.model");
 const Workspace = require("../models/workspace.model");
 const User = require("../models/user.model");
+const { normalizeMessagePayload } = require("../utils/chat-content");
 const { createNotification } = require("./notification.service");
 const env = require("../config/env");
 
@@ -2558,6 +2559,195 @@ const upsertEventReminder = async ({ eventId, actorUserId, payload }) => {
   };
 };
 
+const EVENT_CHAT_DELETED_TEXT = "This message was deleted";
+
+const applyEventChatMessagePopulate = (query) =>
+  query
+    .populate("userId", "fullName email avatarUrl title")
+    .populate({
+      path: "replyToMessageId",
+      select: "_id message messageType userId isDeleted deletedAt createdAt",
+      populate: {
+        path: "userId",
+        select: "fullName email avatarUrl title",
+      },
+    })
+    .populate({
+      path: "forwardedFromMessageId",
+      select: "_id message messageType userId isDeleted deletedAt createdAt",
+      populate: {
+        path: "userId",
+        select: "fullName email avatarUrl title",
+      },
+    });
+
+const resolveEventChatTicketCard = async ({ eventId, ticketRef, actorUserId }) => {
+  const trimmedRef = String(ticketRef || "").trim();
+
+  if (!trimmedRef) {
+    throw new ApiError(400, "ticketRef is required");
+  }
+
+  let ticket = null;
+
+  if (objectIdRegex.test(trimmedRef)) {
+    ticket = await EventTicket.findById(trimmedRef);
+  }
+
+  if (!ticket) {
+    ticket = await EventTicket.findOne({
+      $or: [{ ticketCode: trimmedRef }, { barcodeValue: trimmedRef }],
+      eventId,
+    });
+  }
+
+  if (!ticket || String(ticket.eventId) !== String(eventId)) {
+    throw new ApiError(404, "Ticket not found for this event");
+  }
+
+  const actorId = String(actorUserId);
+  const buyerId = String(ticket.buyerUserId || "");
+  const organizerId = String(ticket.organizerUserId || "");
+
+  if (actorId !== buyerId && actorId !== organizerId) {
+    throw new ApiError(403, "You cannot share this ticket");
+  }
+
+  return {
+    ticketId: String(ticket._id),
+    ticketCode: ticket.ticketCode || "",
+    barcodeValue: ticket.barcodeValue || ticket.ticketCode || String(ticket._id),
+    status: ticket.status || "pending",
+  };
+};
+
+const resolveEventChatReplyPreview = async ({ eventId, replyToMessageId }) => {
+  const replyId = String(replyToMessageId || "").trim();
+
+  if (!replyId) {
+    return null;
+  }
+
+  const message = await EventChatMessage.findOne({
+    _id: replyId,
+    eventId,
+  })
+    .populate("userId", "fullName email avatarUrl title")
+    .select("_id message messageType userId isDeleted deletedAt");
+
+  if (!message) {
+    throw new ApiError(404, "Reply target message not found");
+  }
+
+  return {
+    _id: String(message._id),
+    message: message.isDeleted ? EVENT_CHAT_DELETED_TEXT : message.message || "",
+    messageType: message.messageType || "text",
+    sender:
+      typeof message.userId === "object" && message.userId
+        ? {
+            _id: String(message.userId._id),
+            fullName: message.userId.fullName || "Vera user",
+          }
+        : null,
+    isDeleted: message.isDeleted === true,
+  };
+};
+
+const resolveEventChatForwardPreview = async ({
+  eventId,
+  forwardedFromMessageId,
+}) => {
+  const forwardedId = String(forwardedFromMessageId || "").trim();
+
+  if (!forwardedId) {
+    return null;
+  }
+
+  const message = await EventChatMessage.findOne({
+    _id: forwardedId,
+    eventId,
+  })
+    .populate("userId", "fullName email avatarUrl title")
+    .select("_id message messageType userId isDeleted deletedAt");
+
+  if (!message) {
+    throw new ApiError(404, "Forward source message not found");
+  }
+
+  return {
+    _id: String(message._id),
+    message: message.isDeleted ? EVENT_CHAT_DELETED_TEXT : message.message || "",
+    messageType: message.messageType || "text",
+    sender:
+      typeof message.userId === "object" && message.userId
+        ? {
+            _id: String(message.userId._id),
+            fullName: message.userId.fullName || "Vera user",
+          }
+        : null,
+    isDeleted: message.isDeleted === true,
+  };
+};
+
+const buildEventChatWrite = async ({ event, actorUserId, payload }) => {
+  const normalized = normalizeMessagePayload({
+    payload,
+    allowEventCard: false,
+  });
+  const metadata = normalized.metadata || {};
+
+  if (normalized.messageType === "ticket") {
+    metadata.ticket = await resolveEventChatTicketCard({
+      eventId: event._id,
+      ticketRef: metadata.ticketRef,
+      actorUserId,
+    });
+  }
+
+  const replyPreview = await resolveEventChatReplyPreview({
+    eventId: event._id,
+    replyToMessageId: normalized.replyToMessageId,
+  });
+
+  if (replyPreview) {
+    metadata.replyPreview = replyPreview;
+  } else {
+    delete metadata.replyPreview;
+  }
+
+  const forwardedPreview = await resolveEventChatForwardPreview({
+    eventId: event._id,
+    forwardedFromMessageId: normalized.forwardedFromMessageId,
+  });
+
+  if (forwardedPreview) {
+    metadata.forwardedPreview = forwardedPreview;
+  } else {
+    delete metadata.forwardedPreview;
+  }
+
+  return {
+    message: normalized.message,
+    messageType: normalized.messageType,
+    metadata,
+    replyToMessageId: normalized.replyToMessageId || null,
+    forwardedFromMessageId: normalized.forwardedFromMessageId || null,
+  };
+};
+
+const hydrateEventChatMessageById = async (messageId) => {
+  const message = await applyEventChatMessagePopulate(
+    EventChatMessage.findById(messageId),
+  );
+
+  if (!message) {
+    throw new ApiError(404, "Chat message not found");
+  }
+
+  return message;
+};
+
 const listEventChatMessages = async ({
   eventId,
   actorUserId,
@@ -2578,11 +2768,12 @@ const listEventChatMessages = async ({
   const skip = (pageNumber - 1) * limitNumber;
 
   const [items, totalItems] = await Promise.all([
-    EventChatMessage.find({ eventId: event._id })
-      .populate("userId", "fullName email avatarUrl title")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNumber),
+    applyEventChatMessagePopulate(
+      EventChatMessage.find({ eventId: event._id })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNumber),
+    ),
     EventChatMessage.countDocuments({ eventId: event._id }),
   ]);
 
@@ -2609,13 +2800,23 @@ const createEventChatMessage = async ({ eventId, actorUserId, payload }) => {
   await ensureEventCanBeViewedBy(event, actorUserId);
   await ensureEventParticipant({ event, actorUserId });
 
+  const messageInput = await buildEventChatWrite({
+    event,
+    actorUserId,
+    payload,
+  });
+
   const message = await EventChatMessage.create({
     eventId: event._id,
     userId: actorUserId,
-    message: String(payload.message || "").trim(),
+    message: messageInput.message,
+    messageType: messageInput.messageType,
+    metadata: messageInput.metadata,
+    replyToMessageId: messageInput.replyToMessageId,
+    forwardedFromMessageId: messageInput.forwardedFromMessageId,
   });
 
-  await message.populate("userId", "fullName email avatarUrl title");
+  const hydratedMessage = await hydrateEventChatMessageById(message._id);
 
   const organizerUserId = toIdString(event.organizerUserId);
 
@@ -2624,7 +2825,7 @@ const createEventChatMessage = async ({ eventId, actorUserId, payload }) => {
       userId: organizerUserId,
       type: "event.chat.message",
       title: `New chat in ${event.name}`,
-      message: `${message.userId?.fullName || "Attendee"} sent a message.`,
+      message: `${hydratedMessage.userId?.fullName || "Attendee"} sent a message.`,
       data: {
         target: "event-chat",
         eventId: String(event._id),
@@ -2633,7 +2834,107 @@ const createEventChatMessage = async ({ eventId, actorUserId, payload }) => {
     }).catch(() => null);
   }
 
-  return message;
+  return hydratedMessage;
+};
+
+const updateEventChatMessage = async ({
+  eventId,
+  actorUserId,
+  messageId,
+  payload,
+}) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeViewedBy(event, actorUserId);
+  await ensureEventParticipant({ event, actorUserId });
+
+  const existing = await EventChatMessage.findOne({
+    _id: messageId,
+    eventId: event._id,
+  }).select("_id userId messageType isDeleted");
+
+  if (!existing) {
+    throw new ApiError(404, "Chat message not found");
+  }
+
+  if (String(existing.userId) !== String(actorUserId)) {
+    throw new ApiError(403, "You can only edit your own message");
+  }
+
+  if (existing.isDeleted) {
+    throw new ApiError(400, "Deleted messages cannot be edited");
+  }
+
+  if (existing.messageType !== "text") {
+    throw new ApiError(400, "Only text messages can be edited");
+  }
+
+  const normalized = normalizeMessagePayload({
+    payload: {
+      ...(payload || {}),
+      messageType: "text",
+    },
+    allowEventCard: false,
+  });
+
+  await EventChatMessage.updateOne(
+    { _id: existing._id },
+    {
+      $set: {
+        message: normalized.message,
+        editedAt: new Date(),
+      },
+    },
+  );
+
+  return hydrateEventChatMessageById(existing._id);
+};
+
+const deleteEventChatMessage = async ({ eventId, actorUserId, messageId }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeViewedBy(event, actorUserId);
+  await ensureEventParticipant({ event, actorUserId });
+
+  const existing = await EventChatMessage.findOne({
+    _id: messageId,
+    eventId: event._id,
+  }).select("_id userId isDeleted");
+
+  if (!existing) {
+    throw new ApiError(404, "Chat message not found");
+  }
+
+  if (String(existing.userId) !== String(actorUserId)) {
+    throw new ApiError(403, "You can only unsend your own message");
+  }
+
+  if (!existing.isDeleted) {
+    await EventChatMessage.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          isDeleted: true,
+          deletedAt: new Date(),
+          editedAt: new Date(),
+          message: EVENT_CHAT_DELETED_TEXT,
+          metadata: {},
+          replyToMessageId: null,
+          forwardedFromMessageId: null,
+        },
+      },
+    );
+  }
+
+  return hydrateEventChatMessageById(existing._id);
 };
 
 const listEventPosts = async ({
@@ -3024,6 +3325,8 @@ module.exports = {
   upsertEventReminder,
   listEventChatMessages,
   createEventChatMessage,
+  updateEventChatMessage,
+  deleteEventChatMessage,
   listEventPosts,
   createEventPost,
   toggleEventPostLike,

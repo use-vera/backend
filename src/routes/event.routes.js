@@ -24,6 +24,8 @@ const {
   listEventFeedQuerySchema,
   eventReminderSchema,
   eventChatMessageBodySchema,
+  eventChatMessageParamsSchema,
+  updateEventChatMessageBodySchema,
   eventChatQuerySchema,
   createEventPostSchema,
   listEventPostsQuerySchema,
@@ -52,6 +54,8 @@ const {
   updateEventReminderController,
   listEventChatController,
   createEventChatMessageController,
+  updateEventChatMessageController,
+  deleteEventChatMessageController,
   listEventPostsController,
   createEventPostController,
   toggleEventPostLikeController,
@@ -134,6 +138,17 @@ router.post(
   validateParams(eventIdParamsSchema),
   validateBody(eventChatMessageBodySchema),
   createEventChatMessageController,
+);
+router.patch(
+  "/:eventId/chat/:messageId",
+  validateParams(eventChatMessageParamsSchema),
+  validateBody(updateEventChatMessageBodySchema),
+  updateEventChatMessageController,
+);
+router.delete(
+  "/:eventId/chat/:messageId",
+  validateParams(eventChatMessageParamsSchema),
+  deleteEventChatMessageController,
 );
 router.get(
   "/:eventId/posts",

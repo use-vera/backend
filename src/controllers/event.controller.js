@@ -21,6 +21,8 @@ const {
   upsertEventReminder,
   listEventChatMessages,
   createEventChatMessage,
+  updateEventChatMessage,
+  deleteEventChatMessage,
   listEventPosts,
   createEventPost,
   toggleEventPostLike,
@@ -208,6 +210,45 @@ const createEventChatMessageController = asyncHandler(async (req, res) => {
   res.status(201).json({
     success: true,
     message: "Message sent",
+    data: result,
+  });
+});
+
+const updateEventChatMessageController = asyncHandler(async (req, res) => {
+  const result = await updateEventChatMessage({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+    messageId: req.params.messageId,
+    payload: req.body,
+  });
+
+  emitEventChatMessageCreated({
+    eventId: req.params.eventId,
+    message: result,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Message updated",
+    data: result,
+  });
+});
+
+const deleteEventChatMessageController = asyncHandler(async (req, res) => {
+  const result = await deleteEventChatMessage({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+    messageId: req.params.messageId,
+  });
+
+  emitEventChatMessageCreated({
+    eventId: req.params.eventId,
+    message: result,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Message unsent",
     data: result,
   });
 });
@@ -428,6 +469,8 @@ module.exports = {
   updateEventReminderController,
   listEventChatController,
   createEventChatMessageController,
+  updateEventChatMessageController,
+  deleteEventChatMessageController,
   listEventPostsController,
   createEventPostController,
   toggleEventPostLikeController,

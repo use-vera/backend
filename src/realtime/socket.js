@@ -5,8 +5,17 @@ const User = require("../models/user.model");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
 const DirectConversation = require("../models/direct-conversation.model");
-const { createEventChatMessage } = require("../services/event.service");
-const { sendDirectMessage } = require("../services/chat.service");
+const {
+  createEventChatMessage,
+  updateEventChatMessage,
+  deleteEventChatMessage,
+} = require("../services/event.service");
+const {
+  sendDirectMessage,
+  markDirectConversationRead,
+  updateDirectMessage,
+  deleteDirectMessage,
+} = require("../services/chat.service");
 const { setSocketServer } = require("./socket-broker");
 
 const getAllowedOrigins = () => {
@@ -151,8 +160,10 @@ const initializeSocketServer = ({ httpServer }) => {
       try {
         const eventId = normalizeText(payload?.eventId);
         const message = normalizeText(payload?.message);
+        const messageType = normalizeText(payload?.messageType).toLowerCase();
+        const requiresTextMessage = !messageType || messageType === "text";
 
-        if (!eventId || !message) {
+        if (!eventId || (requiresTextMessage && !message)) {
           callback?.({ ok: false, message: "eventId and message are required" });
           return;
         }
@@ -164,6 +175,10 @@ const initializeSocketServer = ({ httpServer }) => {
           actorUserId: userId,
           payload: {
             message,
+            messageType: payload?.messageType,
+            metadata: payload?.metadata,
+            replyToMessageId: payload?.replyToMessageId,
+            forwardedFromMessageId: payload?.forwardedFromMessageId,
           },
         });
 
@@ -181,6 +196,78 @@ const initializeSocketServer = ({ httpServer }) => {
       }
     });
 
+    socket.on("event:message:update", async (payload, callback) => {
+      try {
+        const eventId = normalizeText(payload?.eventId);
+        const messageId = normalizeText(payload?.messageId);
+        const message = normalizeText(payload?.message);
+
+        if (!eventId || !messageId || !message) {
+          callback?.({
+            ok: false,
+            message: "eventId, messageId and message are required",
+          });
+          return;
+        }
+
+        await ensureEventAccessForChat({ eventId, userId });
+
+        const updated = await updateEventChatMessage({
+          eventId,
+          actorUserId: userId,
+          messageId,
+          payload: { message },
+        });
+
+        io.to(`event:${eventId}`).emit("event:message:new", {
+          eventId,
+          message: updated,
+        });
+
+        callback?.({ ok: true, data: updated });
+      } catch (error) {
+        callback?.({
+          ok: false,
+          message: error instanceof Error ? error.message : "Could not update message",
+        });
+      }
+    });
+
+    socket.on("event:message:delete", async (payload, callback) => {
+      try {
+        const eventId = normalizeText(payload?.eventId);
+        const messageId = normalizeText(payload?.messageId);
+
+        if (!eventId || !messageId) {
+          callback?.({
+            ok: false,
+            message: "eventId and messageId are required",
+          });
+          return;
+        }
+
+        await ensureEventAccessForChat({ eventId, userId });
+
+        const updated = await deleteEventChatMessage({
+          eventId,
+          actorUserId: userId,
+          messageId,
+        });
+
+        io.to(`event:${eventId}`).emit("event:message:new", {
+          eventId,
+          message: updated,
+        });
+
+        callback?.({ ok: true, data: updated });
+      } catch (error) {
+        callback?.({
+          ok: false,
+          message: error instanceof Error ? error.message : "Could not unsend message",
+        });
+      }
+    });
+
     socket.on("direct:join", async (payload, callback) => {
       try {
         const conversationId = normalizeText(payload?.conversationId);
@@ -191,6 +278,10 @@ const initializeSocketServer = ({ httpServer }) => {
         }
 
         await ensureDirectConversationAccess({ conversationId, userId });
+        await markDirectConversationRead({
+          actorUserId: userId,
+          conversationId,
+        });
         socket.join(`direct:${conversationId}`);
 
         callback?.({ ok: true, conversationId });
@@ -219,8 +310,10 @@ const initializeSocketServer = ({ httpServer }) => {
       try {
         const conversationId = normalizeText(payload?.conversationId);
         const message = normalizeText(payload?.message);
+        const messageType = normalizeText(payload?.messageType).toLowerCase();
+        const requiresTextMessage = !messageType || messageType === "text";
 
-        if (!conversationId || !message) {
+        if (!conversationId || (requiresTextMessage && !message)) {
           callback?.({
             ok: false,
             message: "conversationId and message are required",
@@ -233,7 +326,13 @@ const initializeSocketServer = ({ httpServer }) => {
         const result = await sendDirectMessage({
           actorUserId: userId,
           conversationId,
-          message,
+          payload: {
+            message,
+            messageType: payload?.messageType,
+            metadata: payload?.metadata,
+            replyToMessageId: payload?.replyToMessageId,
+            forwardedFromMessageId: payload?.forwardedFromMessageId,
+          },
         });
 
         io.to(`direct:${conversationId}`).emit("direct:message:new", {
@@ -259,6 +358,104 @@ const initializeSocketServer = ({ httpServer }) => {
         callback?.({
           ok: false,
           message: error instanceof Error ? error.message : "Could not send message",
+        });
+      }
+    });
+
+    socket.on("direct:message:update", async (payload, callback) => {
+      try {
+        const conversationId = normalizeText(payload?.conversationId);
+        const messageId = normalizeText(payload?.messageId);
+        const message = normalizeText(payload?.message);
+
+        if (!conversationId || !messageId || !message) {
+          callback?.({
+            ok: false,
+            message: "conversationId, messageId and message are required",
+          });
+          return;
+        }
+
+        await ensureDirectConversationAccess({ conversationId, userId });
+
+        const result = await updateDirectMessage({
+          actorUserId: userId,
+          conversationId,
+          messageId,
+          payload: { message },
+        });
+
+        io.to(`direct:${conversationId}`).emit("direct:message:new", {
+          conversationId,
+          message: result.message,
+        });
+
+        for (const participant of result.conversation?.participants || []) {
+          const participantUserId = String(participant?._id || participant || "");
+
+          if (!participantUserId) {
+            continue;
+          }
+
+          io.to(`user:${participantUserId}`).emit("direct:message:new", {
+            conversationId,
+            message: result.message,
+          });
+        }
+
+        callback?.({ ok: true, data: result.message });
+      } catch (error) {
+        callback?.({
+          ok: false,
+          message: error instanceof Error ? error.message : "Could not update message",
+        });
+      }
+    });
+
+    socket.on("direct:message:delete", async (payload, callback) => {
+      try {
+        const conversationId = normalizeText(payload?.conversationId);
+        const messageId = normalizeText(payload?.messageId);
+
+        if (!conversationId || !messageId) {
+          callback?.({
+            ok: false,
+            message: "conversationId and messageId are required",
+          });
+          return;
+        }
+
+        await ensureDirectConversationAccess({ conversationId, userId });
+
+        const result = await deleteDirectMessage({
+          actorUserId: userId,
+          conversationId,
+          messageId,
+        });
+
+        io.to(`direct:${conversationId}`).emit("direct:message:new", {
+          conversationId,
+          message: result.message,
+        });
+
+        for (const participant of result.conversation?.participants || []) {
+          const participantUserId = String(participant?._id || participant || "");
+
+          if (!participantUserId) {
+            continue;
+          }
+
+          io.to(`user:${participantUserId}`).emit("direct:message:new", {
+            conversationId,
+            message: result.message,
+          });
+        }
+
+        callback?.({ ok: true, data: result.message });
+      } catch (error) {
+        callback?.({
+          ok: false,
+          message: error instanceof Error ? error.message : "Could not unsend message",
         });
       }
     });
