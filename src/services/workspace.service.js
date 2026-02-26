@@ -4,6 +4,7 @@ const Workspace = require("../models/workspace.model");
 const JoinRequest = require("../models/join-request.model");
 const User = require("../models/user.model");
 const AttendanceLog = require("../models/attendance-log.model");
+const { createNotification } = require("./notification.service");
 const { makeWorkspaceSlug } = require("../utils/slug");
 
 const roleWeight = {
@@ -451,8 +452,47 @@ const updateMemberRole = async ({
     throw new ApiError(403, "Only workspace owner can promote admins");
   }
 
+  const previousRole = targetMembership.role;
   targetMembership.role = role;
   await targetMembership.save();
+
+  if (previousRole !== role) {
+    const workspaceName = workspace.name || "Workspace";
+
+    if (role === "admin") {
+      await createNotification({
+        userId: targetMembership.userId?._id || targetMembership.userId,
+        type: "workspace.role.promoted",
+        title: "You are now an admin",
+        message: `You were promoted to admin in ${workspaceName}.`,
+        data: {
+          workspaceId: String(workspace._id),
+          workspaceSlug: workspace.slug,
+          workspaceName,
+          memberId: String(targetMembership._id),
+          previousRole,
+          nextRole: role,
+          promotedByUserId: String(actorUserId),
+        },
+      }).catch(() => undefined);
+    } else if (role === "member" && previousRole === "admin") {
+      await createNotification({
+        userId: targetMembership.userId?._id || targetMembership.userId,
+        type: "workspace.role.updated",
+        title: "Workspace role updated",
+        message: `Your role in ${workspaceName} was changed to member.`,
+        data: {
+          workspaceId: String(workspace._id),
+          workspaceSlug: workspace.slug,
+          workspaceName,
+          memberId: String(targetMembership._id),
+          previousRole,
+          nextRole: role,
+          updatedByUserId: String(actorUserId),
+        },
+      }).catch(() => undefined);
+    }
+  }
 
   return targetMembership;
 };

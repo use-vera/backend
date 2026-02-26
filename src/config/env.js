@@ -68,6 +68,11 @@ const env = {
     process.env.PRESENCE_MONITOR_TICK_MS,
     60 * 1000,
   ),
+  eventReminderEnabled: toBoolean(process.env.EVENT_REMINDER_ENABLED, true),
+  eventReminderTickMs: toNumber(
+    process.env.EVENT_REMINDER_TICK_MS,
+    5 * 60 * 1000,
+  ),
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || "",
   paystackBaseUrl:
     process.env.PAYSTACK_BASE_URL || "https://api.paystack.co",
@@ -76,6 +81,7 @@ const env = {
     process.env.PAYSTACK_DEV_BYPASS,
     nodeEnv !== "production",
   ),
+  expoAccessToken: process.env.EXPO_ACCESS_TOKEN || "",
 };
 
 if (

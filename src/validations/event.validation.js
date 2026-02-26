@@ -69,6 +69,29 @@ const recurrenceSchema = z
     }
   });
 
+const pricingSchema = z
+  .object({
+    dynamicEnabled: z.boolean().optional().default(false),
+    minPriceNaira: z.coerce.number().min(0).optional().default(0),
+    maxPriceNaira: z.coerce.number().min(0).nullable().optional().default(null),
+    demandSensitivity: z.coerce.number().min(0.1).max(3).optional().default(1),
+    discountFloorRatio: z.coerce.number().min(0.4).max(1).optional().default(0.8),
+    surgeCapRatio: z.coerce.number().min(1).max(3).optional().default(1.6),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.maxPriceNaira !== null &&
+      value.maxPriceNaira !== undefined &&
+      value.maxPriceNaira < value.minPriceNaira
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["maxPriceNaira"],
+        message: "maxPriceNaira cannot be less than minPriceNaira",
+      });
+    }
+  });
+
 const createEventSchema = z
   .object({
     workspaceId: workspaceRefSchema.optional(),
@@ -93,6 +116,14 @@ const createEventSchema = z
     ticketPriceNaira: z.coerce.number().min(0).optional().default(0),
     expectedTickets: z.coerce.number().int().min(1).max(200000),
     recurrence: recurrenceSchema.optional().default({ type: "none", interval: 1, daysOfWeek: [] }),
+    pricing: pricingSchema.optional().default({
+      dynamicEnabled: false,
+      minPriceNaira: 0,
+      maxPriceNaira: null,
+      demandSensitivity: 1,
+      discountFloorRatio: 0.8,
+      surgeCapRatio: 1.6,
+    }),
     status: z.enum(["draft", "published", "cancelled"]).optional().default("published"),
   })
   .superRefine((value, ctx) => {
@@ -140,6 +171,7 @@ const updateEventSchema = z
     ticketPriceNaira: z.coerce.number().min(0).optional(),
     expectedTickets: z.coerce.number().int().min(1).max(200000).optional(),
     recurrence: recurrenceSchema.optional(),
+    pricing: pricingSchema.optional(),
     status: z.enum(["draft", "published", "cancelled"]).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
@@ -158,6 +190,11 @@ const listEventsQuerySchema = z.object({
   workspaceId: workspaceRefSchema.optional(),
 });
 
+const listFeaturedEventsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(20).optional().default(8),
+  workspaceId: workspaceRefSchema.optional(),
+});
+
 const listMyEventsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(100000).optional().default(1),
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
@@ -171,6 +208,10 @@ const eventIdParamsSchema = z.object({
 
 const ticketIdParamsSchema = z.object({
   ticketId: objectIdSchema,
+});
+
+const postIdParamsSchema = z.object({
+  postId: objectIdSchema,
 });
 
 const initializeTicketPurchaseSchema = z.object({
@@ -199,15 +240,85 @@ const listMyTicketsQuerySchema = z.object({
     .default("all"),
 });
 
+const listOrganizerTicketSalesQuerySchema = listMyTicketsQuerySchema;
+
+const listEventRatingsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100000).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+});
+
+const listEventFeedQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100000).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+  scope: z.enum(["global", "mine"]).optional().default("global"),
+  search: z.string().trim().max(120).optional(),
+});
+
+const eventReminderSchema = z.object({
+  enabled: z.boolean().optional(),
+  offsetsMinutes: z
+    .array(z.coerce.number().int().min(5).max(20160))
+    .max(6)
+    .optional(),
+});
+
+const eventChatMessageBodySchema = z.object({
+  message: z.string().trim().min(1).max(1200),
+});
+
+const eventChatQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100000).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(60).optional().default(25),
+});
+
+const createEventPostSchema = z.object({
+  type: z.enum(["photo", "update"]).optional().default("photo"),
+  caption: z.string().trim().max(800).optional().default(""),
+  imageUrl: z.string().trim().max(600).optional().default(""),
+  visibility: z.enum(["public", "ticket-holders"]).optional().default("public"),
+});
+
+const listEventPostsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100000).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+});
+
+const createEventPostCommentSchema = z.object({
+  comment: z.string().trim().min(1).max(800),
+});
+
+const listEventPostCommentsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100000).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(80).optional().default(25),
+});
+
+const rateEventSchema = z.object({
+  rating: z.coerce.number().int().min(1).max(5),
+  review: z.string().trim().max(600).optional().default(""),
+});
+
 module.exports = {
   createEventSchema,
   updateEventSchema,
   listEventsQuerySchema,
+  listFeaturedEventsQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
   ticketIdParamsSchema,
+  postIdParamsSchema,
   initializeTicketPurchaseSchema,
   verifyTicketPaymentSchema,
   ticketCheckInSchema,
   listMyTicketsQuerySchema,
+  listOrganizerTicketSalesQuerySchema,
+  listEventRatingsQuerySchema,
+  rateEventSchema,
+  listEventFeedQuerySchema,
+  eventReminderSchema,
+  eventChatMessageBodySchema,
+  eventChatQuerySchema,
+  createEventPostSchema,
+  listEventPostsQuerySchema,
+  createEventPostCommentSchema,
+  listEventPostCommentsQuerySchema,
 };

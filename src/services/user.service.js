@@ -129,6 +129,58 @@ const formatHourMinute = (minutesInDay) => {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 };
 
+const getDayDiff = (leftDayKey, rightDayKey) => {
+  const left = startOfDay(leftDayKey).getTime();
+  const right = startOfDay(rightDayKey).getTime();
+  return Math.round((left - right) / DAY_MS);
+};
+
+const computeStreaks = (dayKeys) => {
+  if (!dayKeys.length) {
+    return {
+      currentStreakDays: 0,
+      longestStreakDays: 0,
+    };
+  }
+
+  const sorted = [...new Set(dayKeys)].sort(
+    (a, b) => startOfDay(a).getTime() - startOfDay(b).getTime(),
+  );
+
+  let longest = 1;
+  let running = 1;
+
+  for (let index = 1; index < sorted.length; index += 1) {
+    const diff = getDayDiff(sorted[index], sorted[index - 1]);
+
+    if (diff === 1) {
+      running += 1;
+      longest = Math.max(longest, running);
+      continue;
+    }
+
+    running = 1;
+  }
+
+  let current = 1;
+
+  for (let index = sorted.length - 1; index > 0; index -= 1) {
+    const diff = getDayDiff(sorted[index], sorted[index - 1]);
+
+    if (diff === 1) {
+      current += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return {
+    currentStreakDays: current,
+    longestStreakDays: longest,
+  };
+};
+
 const getUserProfile = async (userId) => {
   const user = await User.findById(userId);
 
@@ -255,6 +307,7 @@ const getUserAttendanceReport = async ({
 
   const checkIns = logs.filter((log) => log.type === "check-in");
   const checkOuts = logs.filter((log) => log.type === "check-out");
+  const streaks = computeStreaks(checkIns.map((log) => toDayKey(log.timestamp)));
 
   const dayMap = new Map();
   const workspaceMap = new Map();
@@ -416,6 +469,8 @@ const getUserAttendanceReport = async ({
       checkIns: checkIns.length,
       checkOuts: checkOuts.length,
       daysPresent,
+      currentStreakDays: streaks.currentStreakDays,
+      longestStreakDays: streaks.longestStreakDays,
       attendanceRate: Number(((daysPresent / totalDaysInRange) * 100).toFixed(1)),
       averageCheckInTime,
       totalMinutes,

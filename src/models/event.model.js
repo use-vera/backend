@@ -42,6 +42,44 @@ const recurrenceSchema = new Schema(
   { _id: false },
 );
 
+const pricingSchema = new Schema(
+  {
+    dynamicEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    minPriceNaira: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+    maxPriceNaira: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
+    demandSensitivity: {
+      type: Number,
+      min: 0.1,
+      max: 3,
+      default: 1,
+    },
+    discountFloorRatio: {
+      type: Number,
+      min: 0.4,
+      max: 1,
+      default: 0.8,
+    },
+    surgeCapRatio: {
+      type: Number,
+      min: 1,
+      max: 3,
+      default: 1.6,
+    },
+  },
+  { _id: false },
+);
+
 const eventSchema = new Schema(
   {
     organizerUserId: {
@@ -136,6 +174,17 @@ const eventSchema = new Schema(
     recurrence: {
       type: recurrenceSchema,
       default: () => ({ type: "none", interval: 1, daysOfWeek: [] }),
+    },
+    pricing: {
+      type: pricingSchema,
+      default: () => ({
+        dynamicEnabled: false,
+        minPriceNaira: 0,
+        maxPriceNaira: null,
+        demandSensitivity: 1,
+        discountFloorRatio: 0.8,
+        surgeCapRatio: 1.6,
+      }),
     },
     status: {
       type: String,
