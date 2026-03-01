@@ -5,6 +5,7 @@ const {
   listFeaturedEvents,
   listMyEvents,
   getEventById,
+  getOrganizerProfileById,
   listEventRatings,
   rateEvent,
   updateEvent,
@@ -16,6 +17,20 @@ const {
   listOrganizerTicketSales,
   getTicketById,
   listEventTickets,
+  listEventResaleMarketplace,
+  createTicketResale,
+  cancelTicketResale,
+  listTicketResaleBids,
+  createTicketResaleBid,
+  acceptTicketResaleBid,
+  rejectTicketResaleBid,
+  purchaseResaleTicket,
+  initializeResalePurchase,
+  verifyResalePurchase,
+  listTicketTodos,
+  createTicketTodo,
+  updateTicketTodo,
+  deleteTicketTodo,
   listEventFeed,
   getEventReminder,
   upsertEventReminder,
@@ -120,6 +135,19 @@ const getEventController = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: "Event fetched",
+    data: result,
+  });
+});
+
+const getOrganizerProfileController = asyncHandler(async (req, res) => {
+  const result = await getOrganizerProfileById({
+    organizerUserId: req.params.organizerId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Organizer profile fetched",
     data: result,
   });
 });
@@ -456,6 +484,204 @@ const listEventTicketsController = asyncHandler(async (req, res) => {
   });
 });
 
+const listEventResaleMarketplaceController = asyncHandler(async (req, res) => {
+  const result = await listEventResaleMarketplace({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+    page: req.query.page,
+    limit: req.query.limit,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Resale marketplace fetched",
+    data: result,
+  });
+});
+
+const createTicketResaleController = asyncHandler(async (req, res) => {
+  const result = await createTicketResale({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    payload: req.body,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Ticket listed for resale",
+    data: result,
+  });
+});
+
+const cancelTicketResaleController = asyncHandler(async (req, res) => {
+  const result = await cancelTicketResale({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Ticket resale cancelled",
+    data: result,
+  });
+});
+
+const initializeResalePurchaseController = asyncHandler(async (req, res) => {
+  const result = await initializeResalePurchase({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    payload: req.body,
+  });
+
+  res.status(201).json({
+    success: true,
+    message: result.requiresPayment
+      ? "Resale checkout initialized. Complete payment to claim the ticket"
+      : "Resale ticket transferred",
+    data: result,
+  });
+});
+
+const verifyResalePurchaseController = asyncHandler(async (req, res) => {
+  const result = await verifyResalePurchase({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    reference: req.body.reference,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Resale payment verified",
+    data: result,
+  });
+});
+
+const listTicketResaleBidsController = asyncHandler(async (req, res) => {
+  const result = await listTicketResaleBids({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    page: req.query.page,
+    limit: req.query.limit,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Ticket bids fetched",
+    data: result,
+  });
+});
+
+const createTicketResaleBidController = asyncHandler(async (req, res) => {
+  const result = await createTicketResaleBid({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    payload: req.body,
+  });
+
+  res.status(201).json({
+    success: true,
+    message: "Bid placed",
+    data: result,
+  });
+});
+
+const acceptTicketResaleBidController = asyncHandler(async (req, res) => {
+  const result = await acceptTicketResaleBid({
+    ticketId: req.params.ticketId,
+    bidId: req.params.bidId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Bid accepted",
+    data: result,
+  });
+});
+
+const rejectTicketResaleBidController = asyncHandler(async (req, res) => {
+  const result = await rejectTicketResaleBid({
+    ticketId: req.params.ticketId,
+    bidId: req.params.bidId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Bid rejected",
+    data: result,
+  });
+});
+
+const purchaseResaleTicketController = asyncHandler(async (req, res) => {
+  const result = await purchaseResaleTicket({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Resale ticket purchased",
+    data: result,
+  });
+});
+
+const listTicketTodosController = asyncHandler(async (req, res) => {
+  const result = await listTicketTodos({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Ticket todos fetched",
+    data: result,
+  });
+});
+
+const createTicketTodoController = asyncHandler(async (req, res) => {
+  const result = await createTicketTodo({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    payload: req.body,
+  });
+
+  res.status(201).json({
+    success: true,
+    message: "Ticket todo created",
+    data: result,
+  });
+});
+
+const updateTicketTodoController = asyncHandler(async (req, res) => {
+  const result = await updateTicketTodo({
+    ticketId: req.params.ticketId,
+    todoId: req.params.todoId,
+    actorUserId: req.auth.userId,
+    payload: req.body,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Ticket todo updated",
+    data: result,
+  });
+});
+
+const deleteTicketTodoController = asyncHandler(async (req, res) => {
+  const result = await deleteTicketTodo({
+    ticketId: req.params.ticketId,
+    todoId: req.params.todoId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Ticket todo deleted",
+    data: result,
+  });
+});
+
 module.exports = {
   createEventController,
   listEventsController,
@@ -463,6 +689,7 @@ module.exports = {
   listFeaturedEventsController,
   listMyEventsController,
   getEventController,
+  getOrganizerProfileController,
   listEventRatingsController,
   rateEventController,
   getEventReminderController,
@@ -485,4 +712,18 @@ module.exports = {
   listOrganizerTicketSalesController,
   getTicketController,
   listEventTicketsController,
+  listEventResaleMarketplaceController,
+  createTicketResaleController,
+  cancelTicketResaleController,
+  listTicketResaleBidsController,
+  createTicketResaleBidController,
+  acceptTicketResaleBidController,
+  rejectTicketResaleBidController,
+  initializeResalePurchaseController,
+  verifyResalePurchaseController,
+  purchaseResaleTicketController,
+  listTicketTodosController,
+  createTicketTodoController,
+  updateTicketTodoController,
+  deleteTicketTodoController,
 };

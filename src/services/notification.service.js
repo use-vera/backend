@@ -2,6 +2,7 @@ const ApiError = require("../utils/api-error");
 const env = require("../config/env");
 const AppNotification = require("../models/notification.model");
 const DeviceToken = require("../models/device-token.model");
+const { emitUserNotificationCreated } = require("../realtime/socket-broker");
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
@@ -218,6 +219,11 @@ const createNotification = async ({
     title: String(title || "").trim(),
     message: String(message || "").trim(),
     data,
+  });
+
+  emitUserNotificationCreated({
+    userId,
+    notification,
   });
 
   if (!push) {

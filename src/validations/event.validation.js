@@ -92,6 +92,21 @@ const pricingSchema = z
     }
   });
 
+const resalePolicySchema = z.object({
+  enabled: z.boolean().optional().default(true),
+  allowBids: z.boolean().optional().default(true),
+  maxMarkupPercent: z.coerce.number().min(0).max(100).optional().default(25),
+  bidWindowHours: z.coerce.number().int().min(1).max(72).optional().default(12),
+});
+
+const ticketCategorySchema = z.object({
+  categoryId: z.string().trim().min(1).max(60).optional(),
+  name: z.string().trim().min(1).max(60),
+  description: z.string().trim().max(180).optional(),
+  quantity: z.coerce.number().int().min(1).max(200000),
+  priceNaira: z.coerce.number().min(0).optional().default(0),
+});
+
 const createEventSchema = z
   .object({
     workspaceId: workspaceRefSchema.optional(),
@@ -115,6 +130,7 @@ const createEventSchema = z
     isPaid: z.boolean().optional().default(false),
     ticketPriceNaira: z.coerce.number().min(0).optional().default(0),
     expectedTickets: z.coerce.number().int().min(1).max(200000),
+    ticketCategories: z.array(ticketCategorySchema).max(12).optional().default([]),
     recurrence: recurrenceSchema.optional().default({ type: "none", interval: 1, daysOfWeek: [] }),
     pricing: pricingSchema.optional().default({
       dynamicEnabled: false,
@@ -123,6 +139,12 @@ const createEventSchema = z
       demandSensitivity: 1,
       discountFloorRatio: 0.8,
       surgeCapRatio: 1.6,
+    }),
+    resale: resalePolicySchema.optional().default({
+      enabled: true,
+      allowBids: true,
+      maxMarkupPercent: 25,
+      bidWindowHours: 12,
     }),
     status: z.enum(["draft", "published", "cancelled"]).optional().default("published"),
   })
@@ -139,11 +161,20 @@ const createEventSchema = z
     }
 
     if (value.isPaid && value.ticketPriceNaira <= 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["ticketPriceNaira"],
-        message: "Paid events require ticketPriceNaira greater than 0",
-      });
+      const categories = Array.isArray(value.ticketCategories)
+        ? value.ticketCategories
+        : [];
+      const hasValidCategoryPrice = categories.some(
+        (item) => Number(item.priceNaira || 0) > 0,
+      );
+
+      if (!hasValidCategoryPrice) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["ticketPriceNaira"],
+          message: "Paid events require ticketPriceNaira greater than 0",
+        });
+      }
     }
 
     if (!value.isPaid && value.ticketPriceNaira !== 0) {
@@ -152,6 +183,21 @@ const createEventSchema = z
         path: ["ticketPriceNaira"],
         message: "Free events must set ticketPriceNaira to 0",
       });
+    }
+
+    if (Array.isArray(value.ticketCategories) && value.ticketCategories.length > 0) {
+      const totalQuantity = value.ticketCategories.reduce(
+        (sum, item) => sum + Number(item.quantity || 0),
+        0,
+      );
+
+      if (totalQuantity <= 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["ticketCategories"],
+          message: "Ticket categories must include at least one available seat",
+        });
+      }
     }
   });
 
@@ -170,8 +216,10 @@ const updateEventSchema = z
     isPaid: z.boolean().optional(),
     ticketPriceNaira: z.coerce.number().min(0).optional(),
     expectedTickets: z.coerce.number().int().min(1).max(200000).optional(),
+    ticketCategories: z.array(ticketCategorySchema).max(12).optional(),
     recurrence: recurrenceSchema.optional(),
     pricing: pricingSchema.optional(),
+    resale: resalePolicySchema.optional(),
     status: z.enum(["draft", "published", "cancelled"]).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
@@ -206,6 +254,10 @@ const eventIdParamsSchema = z.object({
   eventId: objectIdSchema,
 });
 
+const organizerIdParamsSchema = z.object({
+  organizerId: objectIdSchema,
+});
+
 const ticketIdParamsSchema = z.object({
   ticketId: objectIdSchema,
 });
@@ -214,10 +266,25 @@ const postIdParamsSchema = z.object({
   postId: objectIdSchema,
 });
 
+const ticketBidParamsSchema = z.object({
+  ticketId: objectIdSchema,
+  bidId: objectIdSchema,
+});
+
+const ticketTodoParamsSchema = z.object({
+  ticketId: objectIdSchema,
+  todoId: objectIdSchema,
+});
+
 const initializeTicketPurchaseSchema = z.object({
   quantity: z.coerce.number().int().min(1).max(10).optional().default(1),
+  ticketCategoryId: z.string().trim().min(1).max(60).optional(),
   email: z.string().email().trim().max(160).optional(),
   attendeeName: z.string().trim().max(140).optional(),
+  callbackUrl: z.string().trim().url().max(400).optional(),
+});
+
+const initializeResalePurchaseSchema = z.object({
   callbackUrl: z.string().trim().url().max(400).optional(),
 });
 
@@ -318,6 +385,58 @@ const listEventPostCommentsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(80).optional().default(25),
 });
 
+const createTicketResaleSchema = z.object({
+  priceNaira: z.coerce.number().int().min(1).max(100000000),
+  quantity: z.coerce.number().int().min(1).max(20).optional(),
+  allowBids: z.boolean().optional(),
+});
+
+const listTicketResaleBidsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100000).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+});
+
+const createTicketResaleBidSchema = z.object({
+  amountNaira: z.coerce.number().int().min(1).max(100000000),
+});
+
+const listEventResaleMarketplaceQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100000).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+});
+
+const createTicketTodoSchema = z
+  .object({
+    title: z.string().trim().min(1).max(180),
+    notes: z.string().trim().max(800).optional().default(""),
+    dueAt: dateStringSchema,
+    remindAt: dateStringSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const dueAt = new Date(value.dueAt);
+    const remindAt = value.remindAt ? new Date(value.remindAt) : null;
+
+    if (remindAt && remindAt > dueAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["remindAt"],
+        message: "remindAt cannot be after dueAt",
+      });
+    }
+  });
+
+const updateTicketTodoSchema = z
+  .object({
+    title: z.string().trim().min(1).max(180).optional(),
+    notes: z.string().trim().max(800).optional(),
+    dueAt: dateStringSchema.optional(),
+    remindAt: dateStringSchema.nullish(),
+    isCompleted: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "At least one field is required",
+  });
+
 const rateEventSchema = z.object({
   rating: z.coerce.number().int().min(1).max(5),
   review: z.string().trim().max(600).optional().default(""),
@@ -330,9 +449,14 @@ module.exports = {
   listFeaturedEventsQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
+  organizerIdParamsSchema,
   ticketIdParamsSchema,
   postIdParamsSchema,
+  ticketBidParamsSchema,
+  ticketTodoParamsSchema,
+  ticketCategorySchema,
   initializeTicketPurchaseSchema,
+  initializeResalePurchaseSchema,
   verifyTicketPaymentSchema,
   ticketCheckInSchema,
   listMyTicketsQuerySchema,
@@ -349,4 +473,10 @@ module.exports = {
   listEventPostsQuerySchema,
   createEventPostCommentSchema,
   listEventPostCommentsQuerySchema,
+  createTicketResaleSchema,
+  listTicketResaleBidsQuerySchema,
+  createTicketResaleBidSchema,
+  listEventResaleMarketplaceQuerySchema,
+  createTicketTodoSchema,
+  updateTicketTodoSchema,
 };

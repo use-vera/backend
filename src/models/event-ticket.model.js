@@ -32,6 +32,17 @@ const eventTicketSchema = new Schema(
       max: 20,
       default: 1,
     },
+    ticketCategoryId: {
+      type: Schema.Types.ObjectId,
+      default: null,
+      index: true,
+    },
+    ticketCategoryName: {
+      type: String,
+      trim: true,
+      maxlength: 60,
+      default: "",
+    },
     unitPriceNaira: {
       type: Number,
       min: 0,
@@ -130,6 +141,49 @@ const eventTicketSchema = new Schema(
       ref: "User",
       default: null,
     },
+    resaleStatus: {
+      type: String,
+      enum: ["none", "listed", "offer-accepted"],
+      default: "none",
+      index: true,
+    },
+    resalePriceNaira: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
+    resaleQuantity: {
+      type: Number,
+      min: 1,
+      max: 20,
+      default: null,
+    },
+    resaleAllowBids: {
+      type: Boolean,
+      default: false,
+    },
+    resaleListedAt: {
+      type: Date,
+      default: null,
+    },
+    acceptedBidId: {
+      type: Schema.Types.ObjectId,
+      ref: "TicketResaleBid",
+      default: null,
+    },
+    acceptedBidExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    resaleBuyerUserId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    lastTransferredAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -145,6 +199,7 @@ const eventTicketSchema = new Schema(
 eventTicketSchema.index({ buyerUserId: 1, createdAt: -1 });
 eventTicketSchema.index({ eventId: 1, status: 1 });
 eventTicketSchema.index({ organizerUserId: 1, createdAt: -1 });
+eventTicketSchema.index({ eventId: 1, resaleStatus: 1, updatedAt: -1 });
 
 const EventTicket = model("EventTicket", eventTicketSchema);
 

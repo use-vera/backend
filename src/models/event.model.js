@@ -80,6 +80,64 @@ const pricingSchema = new Schema(
   { _id: false },
 );
 
+const resaleSchema = new Schema(
+  {
+    enabled: {
+      type: Boolean,
+      default: true,
+    },
+    allowBids: {
+      type: Boolean,
+      default: true,
+    },
+    maxMarkupPercent: {
+      type: Number,
+      min: 0,
+      max: 100,
+      default: 25,
+    },
+    bidWindowHours: {
+      type: Number,
+      min: 1,
+      max: 72,
+      default: 12,
+    },
+  },
+  { _id: false },
+);
+
+const ticketCategorySchema = new Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      minlength: 1,
+      maxlength: 60,
+    },
+    description: {
+      type: String,
+      trim: true,
+      maxlength: 180,
+      default: "",
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 200000,
+    },
+    priceNaira: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+  },
+  {
+    _id: true,
+  },
+);
+
 const eventSchema = new Schema(
   {
     organizerUserId: {
@@ -171,6 +229,10 @@ const eventSchema = new Schema(
       min: 1,
       max: 200000,
     },
+    ticketCategories: {
+      type: [ticketCategorySchema],
+      default: [],
+    },
     recurrence: {
       type: recurrenceSchema,
       default: () => ({ type: "none", interval: 1, daysOfWeek: [] }),
@@ -184,6 +246,15 @@ const eventSchema = new Schema(
         demandSensitivity: 1,
         discountFloorRatio: 0.8,
         surgeCapRatio: 1.6,
+      }),
+    },
+    resale: {
+      type: resaleSchema,
+      default: () => ({
+        enabled: true,
+        allowBids: true,
+        maxMarkupPercent: 25,
+        bidWindowHours: 12,
       }),
     },
     status: {

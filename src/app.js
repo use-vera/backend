@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const routes = require("./routes");
+const paymentRoutes = require("./routes/payment.routes");
 const {
   notFoundMiddleware,
   errorMiddleware,
@@ -30,7 +31,8 @@ app.use(
     credentials: env.corsAllowCredentials,
   }),
 );
-app.use(express.json({ limit: "1mb" }));
+app.use("/api/payments", paymentRoutes);
+app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
 

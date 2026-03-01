@@ -6,6 +6,7 @@ const inviteRoutes = require("./invite.routes");
 const eventRoutes = require("./event.routes");
 const notificationRoutes = require("./notification.routes");
 const chatRoutes = require("./chat.routes");
+const fileRoutes = require("./file.routes");
 
 const router = express.Router();
 
@@ -16,5 +17,6 @@ router.use("/invites", inviteRoutes);
 router.use("/events", eventRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/chats", chatRoutes);
+router.use("/files", fileRoutes);
 
 module.exports = router;

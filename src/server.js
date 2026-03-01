@@ -5,6 +5,12 @@ const { connectDb } = require("./config/db");
 const { startPresenceMonitor } = require("./services/presence-monitor.service");
 const { startEventReminderMonitor } = require("./services/event-reminder.service");
 const { startChatReminderMonitor } = require("./services/chat-reminder.service");
+const {
+  startTicketTodoReminderMonitor,
+} = require("./services/ticket-todo-reminder.service");
+const {
+  startTicketResaleMonitor,
+} = require("./services/ticket-resale-monitor.service");
 const { initializeSocketServer } = require("./realtime/socket");
 
 const startServer = async () => {
@@ -20,6 +26,8 @@ const startServer = async () => {
       startPresenceMonitor();
       startEventReminderMonitor();
       startChatReminderMonitor();
+      startTicketTodoReminderMonitor();
+      startTicketResaleMonitor();
     });
   } catch (error) {
     // eslint-disable-next-line no-console

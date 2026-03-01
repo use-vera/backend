@@ -43,8 +43,20 @@ const emitDirectMessageCreated = ({
   }
 };
 
+const emitUserNotificationCreated = ({ userId, notification }) => {
+  if (!io || !userId || !notification) {
+    return;
+  }
+
+  io.to(`user:${userId}`).emit("notification:new", {
+    userId: String(userId),
+    notification,
+  });
+};
+
 module.exports = {
   setSocketServer,
   emitEventChatMessageCreated,
   emitDirectMessageCreated,
+  emitUserNotificationCreated,
 };

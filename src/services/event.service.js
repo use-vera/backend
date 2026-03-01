@@ -8,11 +8,19 @@ const EventPost = require("../models/event-post.model");
 const EventPostLike = require("../models/event-post-like.model");
 const EventPostComment = require("../models/event-post-comment.model");
 const EventReminderPreference = require("../models/event-reminder-preference.model");
+const TicketResaleBid = require("../models/ticket-resale-bid.model");
+const TicketTodo = require("../models/ticket-todo.model");
+const PaymentAttempt = require("../models/payment-attempt.model");
 const Membership = require("../models/membership.model");
 const Workspace = require("../models/workspace.model");
 const User = require("../models/user.model");
 const { normalizeMessagePayload } = require("../utils/chat-content");
 const { createNotification } = require("./notification.service");
+const {
+  generatePaystackReference,
+  initializePaystackTransaction,
+  verifyPaystackTransaction,
+} = require("./paystack.service");
 const env = require("../config/env");
 
 const roleWeight = {
@@ -190,6 +198,84 @@ const normalizeRecurrence = (recurrence, startsAt) => {
   }
 
   return normalized;
+};
+
+const normalizeTicketCategories = ({
+  categories,
+  isPaid,
+}) => {
+  if (!Array.isArray(categories) || categories.length === 0) {
+    return [];
+  }
+
+  const seenNames = new Set();
+
+  return categories.map((category, index) => {
+    const name = String(category?.name || "").trim();
+
+    if (!name) {
+      throw new ApiError(400, `Ticket category ${index + 1} requires a name`);
+    }
+
+    const normalizedName = name.toLowerCase();
+
+    if (seenNames.has(normalizedName)) {
+      throw new ApiError(400, "Ticket category names must be unique");
+    }
+
+    seenNames.add(normalizedName);
+
+    const quantity = Math.max(1, Math.round(Number(category?.quantity || 0)));
+    const inputPrice = Math.max(0, Math.round(Number(category?.priceNaira || 0)));
+    const priceNaira = isPaid ? inputPrice : 0;
+
+    if (isPaid && priceNaira <= 0) {
+      throw new ApiError(
+        400,
+        `Paid category "${name}" requires a price greater than 0`,
+      );
+    }
+
+    const normalized = {
+      name,
+      description: String(category?.description || "").trim(),
+      quantity,
+      priceNaira,
+    };
+
+    const categoryId = String(category?.categoryId || category?._id || "").trim();
+
+    if (objectIdRegex.test(categoryId)) {
+      normalized._id = new mongoose.Types.ObjectId(categoryId);
+    }
+
+    return normalized;
+  });
+};
+
+const getTicketCategoryTotals = (categories) => {
+  if (!Array.isArray(categories) || categories.length === 0) {
+    return {
+      expectedTickets: 0,
+      baseTicketPriceNaira: 0,
+    };
+  }
+
+  return {
+    expectedTickets: categories.reduce(
+      (sum, category) => sum + Math.max(1, Number(category.quantity || 0)),
+      0,
+    ),
+    baseTicketPriceNaira: categories.reduce((min, category) => {
+      const next = Math.max(0, Math.round(Number(category.priceNaira || 0)));
+
+      if (min === null) {
+        return next;
+      }
+
+      return Math.min(min, next);
+    }, null),
+  };
 };
 
 const getNextRecurringOccurrenceStart = (event, referenceAt) => {
@@ -786,72 +872,6 @@ const isDuplicateKeyError = (error) => {
   return Number(error.code) === 11000;
 };
 
-const parsePaystackEnvelope = async (response) => {
-  const rawText = await response.text();
-
-  if (!rawText) {
-    return {
-      payload: null,
-      rawText: null,
-    };
-  }
-
-  try {
-    return {
-      payload: JSON.parse(rawText),
-      rawText,
-    };
-  } catch (_error) {
-    return {
-      payload: null,
-      rawText,
-    };
-  }
-};
-
-const paystackRequest = async (path, { method = "GET", body } = {}) => {
-  if (!env.paystackSecretKey) {
-    throw new ApiError(503, "PAYSTACK_SECRET_KEY is not configured");
-  }
-
-  const url = `${env.paystackBaseUrl}${path}`;
-  let response;
-
-  try {
-    response = await fetch(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${env.paystackSecretKey}`,
-        "Content-Type": "application/json",
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch (error) {
-    throw new ApiError(502, "Could not reach Paystack", {
-      cause: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  const { payload, rawText } = await parsePaystackEnvelope(response);
-
-  if (!response.ok) {
-    throw new ApiError(502, "Paystack request failed", {
-      statusCode: response.status,
-      payload,
-      rawText,
-    });
-  }
-
-  if (!payload || payload.status !== true || !payload.data) {
-    throw new ApiError(502, "Invalid Paystack response", {
-      payload,
-      rawText,
-    });
-  }
-
-  return payload.data;
-};
-
 const createEvent = async ({ actorUserId, payload }) => {
   const organizer = await User.findById(actorUserId);
 
@@ -867,6 +887,20 @@ const createEvent = async ({ actorUserId, payload }) => {
 
   const startsAt = new Date(payload.startsAt);
   const recurrence = normalizeRecurrence(payload.recurrence, startsAt);
+  const ticketCategories = normalizeTicketCategories({
+    categories: payload.ticketCategories,
+    isPaid: payload.isPaid,
+  });
+  const categoryTotals = getTicketCategoryTotals(ticketCategories);
+  const expectedTickets =
+    ticketCategories.length > 0
+      ? categoryTotals.expectedTickets
+      : payload.expectedTickets;
+  const ticketPriceNaira = payload.isPaid
+    ? ticketCategories.length > 0
+      ? Math.max(0, Number(categoryTotals.baseTicketPriceNaira || 0))
+      : payload.ticketPriceNaira
+    : 0;
 
   return Event.create({
     organizerUserId: actorUserId,
@@ -882,11 +916,13 @@ const createEvent = async ({ actorUserId, payload }) => {
     endsAt: new Date(payload.endsAt),
     timezone: payload.timezone || "Africa/Lagos",
     isPaid: payload.isPaid,
-    ticketPriceNaira: payload.isPaid ? payload.ticketPriceNaira : 0,
+    ticketPriceNaira,
     currency: "NGN",
-    expectedTickets: payload.expectedTickets,
+    expectedTickets,
+    ticketCategories,
     recurrence,
     pricing: payload.pricing || undefined,
+    resale: payload.resale || undefined,
     status: payload.status || "published",
   });
 };
@@ -1237,6 +1273,437 @@ const ensureEventParticipant = async ({ event, actorUserId }) => {
   throw new ApiError(403, "Only attendees or organizers can access this action");
 };
 
+const normalizeEventResalePolicy = (event) => ({
+  enabled: event?.resale?.enabled !== false,
+  allowBids: event?.resale?.allowBids !== false,
+  maxMarkupPercent: clamp(
+    Number(event?.resale?.maxMarkupPercent ?? 25),
+    0,
+    100,
+  ),
+  bidWindowHours: clamp(
+    Number(event?.resale?.bidWindowHours ?? 12),
+    1,
+    72,
+  ),
+});
+
+const clearTicketResaleFields = async (ticketId, extraSet = {}) =>
+  EventTicket.findByIdAndUpdate(
+    ticketId,
+    {
+      $set: {
+        resaleStatus: "none",
+        resalePriceNaira: null,
+        resaleQuantity: null,
+        resaleAllowBids: false,
+        resaleListedAt: null,
+        acceptedBidId: null,
+        acceptedBidExpiresAt: null,
+        resaleBuyerUserId: null,
+        ...extraSet,
+      },
+    },
+    { new: true },
+  );
+
+const buildCheckoutPayment = (attempt) => ({
+  reference: String(attempt?.reference || "").trim(),
+  authorizationUrl: String(attempt?.authorizationUrl || "").trim(),
+  accessCode: String(attempt?.accessCode || "").trim(),
+});
+
+const createPaymentAttemptForCheckout = async ({
+  kind,
+  buyerUserId,
+  eventId,
+  ticketId = null,
+  resaleSourceTicketId = null,
+  acceptedBidId = null,
+  amountKobo,
+  callbackUrl = "",
+  email,
+  metadata = {},
+  referenceSuffix = "",
+}) => {
+  const reference = generatePaystackReference(kind, referenceSuffix);
+
+  const attempt = await PaymentAttempt.create({
+    reference,
+    provider: "paystack",
+    kind,
+    buyerUserId,
+    eventId,
+    ticketId,
+    resaleSourceTicketId,
+    acceptedBidId,
+    amountKobo: Math.max(1, Math.round(Number(amountKobo || 0))),
+    currency: "NGN",
+    callbackUrl: String(callbackUrl || "").trim(),
+  });
+
+  try {
+    const paymentData = await initializePaystackTransaction({
+      email,
+      amountKobo: attempt.amountKobo,
+      callbackUrl: attempt.callbackUrl || undefined,
+      reference,
+      metadata: {
+        ...metadata,
+        source: "vera-mobile",
+        kind,
+        paymentAttemptId: String(attempt._id),
+      },
+    });
+
+    attempt.authorizationUrl = String(paymentData.authorization_url || "").trim();
+    attempt.accessCode = String(paymentData.access_code || "").trim();
+    attempt.paystackInitializePayload = paymentData;
+    await attempt.save();
+
+    return attempt;
+  } catch (error) {
+    attempt.status = "failed";
+    attempt.failureReason =
+      error instanceof Error ? error.message : String(error);
+    attempt.fulfillmentStatus = "failed";
+    await attempt.save();
+    throw error;
+  }
+};
+
+const markTicketPaidFromVerifiedPayment = async ({
+  ticket,
+  paymentReference,
+  paymentData,
+}) => {
+  const amountKobo = Number(paymentData?.amount || 0);
+  const expectedKobo = Math.round(Number(ticket.totalPriceNaira || 0) * 100);
+
+  if (amountKobo < expectedKobo) {
+    throw new ApiError(409, "Paid amount is below the expected ticket amount", {
+      amountKobo,
+      expectedKobo,
+    });
+  }
+
+  ticket.status = "paid";
+  ticket.paidAt = ticket.paidAt || new Date();
+  ticket.verifiedAt = new Date();
+  ticket.paymentProvider = "paystack";
+  ticket.paymentReference = paymentReference;
+  ticket.paymentMetadata = {
+    ...(ticket.paymentMetadata || {}),
+    verifyPayload: paymentData,
+  };
+  await ticket.save();
+
+  return ticket;
+};
+
+const getPaymentAttemptForVerification = async ({
+  reference,
+  ticketId = null,
+  kind,
+}) => {
+  const ref = String(reference || "").trim();
+
+  if (ref) {
+    const byReference = await PaymentAttempt.findOne({ reference: ref }).sort({
+      createdAt: -1,
+    });
+
+    if (byReference) {
+      return byReference;
+    }
+  }
+
+  if (ticketId) {
+    const query = kind
+      ? { kind, $or: [{ ticketId }, { resaleSourceTicketId: ticketId }] }
+      : { $or: [{ ticketId }, { resaleSourceTicketId: ticketId }] };
+
+    return PaymentAttempt.findOne(query).sort({ createdAt: -1 });
+  }
+
+  return null;
+};
+
+const markPaymentAttemptVerified = async ({
+  paymentAttempt,
+  paymentData,
+  fulfillmentTicketId,
+}) => {
+  if (!paymentAttempt) {
+    return;
+  }
+
+  paymentAttempt.status = "success";
+  paymentAttempt.paystackVerifyPayload = paymentData;
+  paymentAttempt.fulfilledAt = paymentAttempt.fulfilledAt || new Date();
+  paymentAttempt.fulfillmentStatus = "done";
+  paymentAttempt.failureReason = "";
+  paymentAttempt.fulfillmentTicketId = fulfillmentTicketId || null;
+  await paymentAttempt.save();
+};
+
+const markPaymentAttemptFulfillmentFailed = async ({
+  paymentAttempt,
+  paymentData,
+  reason,
+}) => {
+  if (!paymentAttempt) {
+    return;
+  }
+
+  paymentAttempt.status = "success";
+  paymentAttempt.paystackVerifyPayload = paymentData || paymentAttempt.paystackVerifyPayload;
+  paymentAttempt.fulfillmentStatus = "failed";
+  paymentAttempt.failureReason = String(reason || "").trim();
+  await paymentAttempt.save();
+};
+
+const finalizeTicketPurchasePayment = async ({
+  ticket,
+  paymentAttempt = null,
+  paymentReference,
+  paymentData,
+}) => {
+  const wasAlreadyUsable = ticket.status === "paid" || ticket.status === "used";
+
+  if (!wasAlreadyUsable) {
+    await markTicketPaidFromVerifiedPayment({
+      ticket,
+      paymentReference,
+      paymentData,
+    });
+  }
+
+  await markPaymentAttemptVerified({
+    paymentAttempt,
+    paymentData,
+    fulfillmentTicketId: ticket._id,
+  });
+
+  if (!wasAlreadyUsable) {
+    void createNotification({
+      userId: toIdString(ticket.buyerUserId),
+      type: "ticket.purchase.completed",
+      title: "Payment confirmed",
+      message: "Your ticket is ready to use.",
+      data: {
+        target: "ticket-details",
+        ticketId: String(ticket._id),
+        eventId: toIdString(ticket.eventId),
+      },
+      push: true,
+    }).catch(() => null);
+  }
+
+  return ticket;
+};
+
+const populateResaleTicketQuery = (query) =>
+  query
+    .populate("buyerUserId", "fullName email avatarUrl title")
+    .populate("resaleBuyerUserId", "fullName email avatarUrl title")
+    .populate("usedByUserId", "fullName email avatarUrl title")
+    .populate({
+      path: "eventId",
+      populate: {
+        path: "organizerUserId",
+        select: "fullName email avatarUrl title",
+      },
+    });
+
+const ensureOwnedTicket = async ({ ticketId, actorUserId }) => {
+  const ticket = await populateResaleTicketQuery(EventTicket.findById(ticketId));
+
+  if (!ticket) {
+    throw new ApiError(404, "Ticket not found");
+  }
+
+  if (toIdString(ticket.buyerUserId) !== String(actorUserId)) {
+    throw new ApiError(403, "You do not own this ticket");
+  }
+
+  return ticket;
+};
+
+const expireAcceptedResaleOffer = async ({ ticket, now = new Date() }) => {
+  if (
+    !ticket ||
+    ticket.resaleStatus !== "offer-accepted" ||
+    !ticket.acceptedBidExpiresAt
+  ) {
+    return ticket;
+  }
+
+  const expiresAt = new Date(ticket.acceptedBidExpiresAt);
+
+  if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() > now.getTime()) {
+    return ticket;
+  }
+
+  const acceptedBidId = toIdString(ticket.acceptedBidId);
+  const sellerUserId = toIdString(ticket.buyerUserId);
+  const acceptedBuyerUserId = toIdString(ticket.resaleBuyerUserId);
+
+  if (acceptedBidId) {
+    await TicketResaleBid.updateOne(
+      {
+        _id: acceptedBidId,
+        status: "accepted",
+      },
+      {
+        $set: {
+          status: "expired",
+          respondedAt: now,
+        },
+      },
+    );
+  }
+
+  const refreshed = await EventTicket.findByIdAndUpdate(
+    ticket._id,
+    {
+      $set: {
+        resaleStatus: "listed",
+        acceptedBidId: null,
+        acceptedBidExpiresAt: null,
+        resaleBuyerUserId: null,
+      },
+    },
+    { new: true },
+  );
+
+  if (sellerUserId) {
+    void createNotification({
+      userId: sellerUserId,
+      type: "ticket.resale.offer_expired",
+      title: "Accepted bid expired",
+      message:
+        "The buyer did not complete payment in time. Your ticket is live again.",
+      data: {
+        target: "ticket-resale",
+        ticketId: String(ticket._id),
+        eventId: toIdString(ticket.eventId),
+      },
+      push: true,
+    }).catch(() => null);
+  }
+
+  if (acceptedBuyerUserId) {
+    void createNotification({
+      userId: acceptedBuyerUserId,
+      type: "ticket.resale.payment_expired",
+      title: "Ticket payment window expired",
+      message:
+        "The 12-hour payment window closed. Place another bid if the listing is still available.",
+      data: {
+        target: "ticket-resale",
+        ticketId: String(ticket._id),
+        eventId: toIdString(ticket.eventId),
+      },
+      push: true,
+    }).catch(() => null);
+  }
+
+  return refreshed || ticket;
+};
+
+const expireAcceptedResaleOfferById = async (ticketId, now = new Date()) => {
+  const ticket = await EventTicket.findById(ticketId).select(
+    "_id eventId buyerUserId resaleStatus acceptedBidId acceptedBidExpiresAt resaleBuyerUserId",
+  );
+
+  if (!ticket) {
+    return null;
+  }
+
+  return expireAcceptedResaleOffer({ ticket, now });
+};
+
+const ensureTicketEligibleForResale = async ({ ticket, actorUserId }) => {
+  if (toIdString(ticket.buyerUserId) !== String(actorUserId)) {
+    throw new ApiError(403, "Only the current ticket owner can resell this ticket");
+  }
+
+  if (ticket.status !== "paid") {
+    throw new ApiError(400, "Only paid unused tickets can be resold");
+  }
+
+  if (ticket.usedAt || ticket.status === "used") {
+    throw new ApiError(400, "Used tickets cannot be resold");
+  }
+
+  const event =
+    ticket.eventId && typeof ticket.eventId === "object"
+      ? ticket.eventId
+      : await Event.findById(ticket.eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  const policy = normalizeEventResalePolicy(event);
+
+  if (!policy.enabled) {
+    throw new ApiError(403, "Ticket resale is disabled for this event");
+  }
+
+  return {
+    event,
+    policy,
+  };
+};
+
+const formatResaleTicketForResponse = async (ticket, actorUserId) => {
+  const payload = ticket?.toJSON ? ticket.toJSON() : ticket;
+
+  if (!payload) {
+    return null;
+  }
+
+  const [openBidsCount, highestOpenBid] = await Promise.all([
+    TicketResaleBid.countDocuments({
+      ticketId: payload._id,
+      status: "open",
+    }),
+    TicketResaleBid.findOne({
+      ticketId: payload._id,
+      status: "open",
+    })
+      .sort({ amountNaira: -1, createdAt: 1 })
+      .select("amountNaira bidderUserId"),
+  ]);
+
+  const myBid = actorUserId
+    ? await TicketResaleBid.findOne({
+        ticketId: payload._id,
+        bidderUserId: actorUserId,
+        status: { $in: ["open", "accepted"] },
+      })
+        .sort({ createdAt: -1 })
+        .select("amountNaira status expiresAt")
+        .lean()
+    : null;
+
+  return {
+    ...payload,
+    resaleQuantity: Number(payload.resaleQuantity || 1),
+    openBidsCount: Number(openBidsCount || 0),
+    highestBidNaira: Number(highestOpenBid?.amountNaira || 0),
+    myBid: myBid
+      ? {
+          amountNaira: Number(myBid.amountNaira || 0),
+          status: myBid.status,
+          expiresAt: myBid.expiresAt || null,
+        }
+      : null,
+  };
+};
+
 const getPostLikeMapForActor = async ({ postIds, actorUserId }) => {
   if (!Array.isArray(postIds) || !postIds.length || !actorUserId) {
     return new Set();
@@ -1455,6 +1922,47 @@ const buildOrganizerProfile = async ({ event, actorUserId, now }) => {
   };
 };
 
+const getOrganizerProfileById = async ({
+  organizerUserId,
+  actorUserId,
+}) => {
+  const organizer = await User.findById(organizerUserId).select(
+    "fullName email avatarUrl title bio",
+  );
+
+  if (!organizer) {
+    throw new ApiError(404, "Organizer not found");
+  }
+
+  const referenceEvent = await Event.findOne({
+    organizerUserId,
+  })
+    .sort({ startsAt: -1, createdAt: -1 })
+    .populate("organizerUserId", "fullName email avatarUrl title bio")
+    .populate("workspaceId", "name slug");
+
+  if (referenceEvent) {
+    return buildOrganizerProfile({
+      event: referenceEvent,
+      actorUserId,
+      now: new Date(),
+    });
+  }
+
+  const organizerBadgeMap = await getOrganizerVerificationMap([
+    String(organizer._id),
+  ]);
+
+  return {
+    user: organizer,
+    badge: organizerBadgeMap.get(String(organizer._id)) || null,
+    hostedEventsCount: 0,
+    totalAttendees: 0,
+    upcomingHostedEvents: [],
+    previousHostedEvents: [],
+  };
+};
+
 const getEventById = async ({ eventId, actorUserId }) => {
   const event = await Event.findById(eventId)
     .populate("organizerUserId", "fullName email avatarUrl title")
@@ -1573,17 +2081,102 @@ const updateEvent = async ({
     payload.ticketPriceNaira = 0;
   }
 
+  const hasTicketCategoriesUpdate = Array.isArray(payload.ticketCategories);
+  const nextIsPaid =
+    payload.isPaid !== undefined ? payload.isPaid : Boolean(event.isPaid);
+  const hasPricingShapeChange =
+    payload.isPaid !== undefined ||
+    payload.ticketPriceNaira !== undefined ||
+    hasTicketCategoriesUpdate;
+
   if (payload.isPaid === true && payload.ticketPriceNaira !== undefined && payload.ticketPriceNaira <= 0) {
     throw new ApiError(400, "Paid events require ticketPriceNaira greater than 0");
   }
 
+  if (
+    hasPricingShapeChange &&
+    await EventTicket.exists({
+      eventId: event._id,
+      status: { $in: ["pending", "paid", "used"] },
+    })
+  ) {
+    throw new ApiError(
+      409,
+      "Ticket pricing, paid/free mode, and categories lock after tickets are issued",
+    );
+  }
+
+  if (
+    event.ticketCategories?.length &&
+    !hasTicketCategoriesUpdate &&
+    payload.expectedTickets !== undefined
+  ) {
+    throw new ApiError(
+      400,
+      "Expected ticket count is controlled by ticket categories for this event",
+    );
+  }
+
+  if (
+    event.ticketCategories?.length &&
+    !hasTicketCategoriesUpdate &&
+    payload.ticketPriceNaira !== undefined
+  ) {
+    throw new ApiError(
+      400,
+      "Update ticket category prices instead of the base ticket price for this event",
+    );
+  }
+
   Object.assign(event, payload);
+
+  if (hasTicketCategoriesUpdate) {
+    const normalizedCategories = normalizeTicketCategories({
+      categories: payload.ticketCategories,
+      isPaid: nextIsPaid,
+    });
+    const categoryTotals = getTicketCategoryTotals(normalizedCategories);
+
+    event.ticketCategories = normalizedCategories;
+    event.expectedTickets =
+      normalizedCategories.length > 0
+        ? categoryTotals.expectedTickets
+        : payload.expectedTickets !== undefined
+          ? payload.expectedTickets
+          : event.expectedTickets;
+
+    if (normalizedCategories.length > 0) {
+      event.ticketPriceNaira = nextIsPaid
+        ? Math.max(0, Number(categoryTotals.baseTicketPriceNaira || 0))
+        : 0;
+    }
+  }
+
+  if (!event.isPaid) {
+    event.ticketPriceNaira = 0;
+
+    if (Array.isArray(event.ticketCategories) && event.ticketCategories.length) {
+      event.ticketCategories = event.ticketCategories.map((category) => ({
+        ...(typeof category.toObject === "function"
+          ? category.toObject()
+          : category),
+        priceNaira: 0,
+      }));
+    }
+  }
 
   if (payload.recurrence) {
     event.recurrence = normalizeRecurrence(
       payload.recurrence,
       payload.startsAt ? new Date(payload.startsAt) : new Date(event.startsAt),
     );
+  }
+
+  if (payload.resale) {
+    event.resale = {
+      ...normalizeEventResalePolicy(event),
+      ...payload.resale,
+    };
   }
 
   await event.save();
@@ -1623,13 +2216,20 @@ const deleteEvent = async ({ eventId, actorUserId }) => {
   };
 };
 
-const countReservedTickets = async (eventId) => {
+const countReservedTickets = async (eventId, ticketCategoryId = null) => {
   const pendingCutoff = new Date(Date.now() - 30 * 60 * 1000);
 
   const rows = await EventTicket.aggregate([
     {
       $match: {
         eventId,
+        ...(ticketCategoryId
+          ? {
+              ticketCategoryId: new mongoose.Types.ObjectId(
+                String(ticketCategoryId),
+              ),
+            }
+          : {}),
         $or: [
           { status: { $in: ["paid", "used"] } },
           { status: "pending", createdAt: { $gte: pendingCutoff } },
@@ -1676,9 +2276,33 @@ const initializeTicketPurchase = async ({
   }
 
   const quantity = Number(payload.quantity || 1);
-  const reserved = await countReservedTickets(event._id);
+  const hasTicketCategories =
+    Array.isArray(event.ticketCategories) && event.ticketCategories.length > 0;
+  const requestedCategoryId = String(payload.ticketCategoryId || "").trim();
+  const selectedCategory = hasTicketCategories
+    ? event.ticketCategories.find(
+        (category) => String(category._id) === requestedCategoryId,
+      ) ||
+      (event.ticketCategories.length === 1 ? event.ticketCategories[0] : null)
+    : null;
 
-  if (reserved + quantity > Number(event.expectedTickets || 0)) {
+  if (hasTicketCategories && !selectedCategory) {
+    throw new ApiError(400, "Select a valid ticket category before checkout");
+  }
+
+  const reserved = await countReservedTickets(
+    event._id,
+    selectedCategory ? String(selectedCategory._id) : null,
+  );
+
+  if (selectedCategory) {
+    if (reserved + quantity > Number(selectedCategory.quantity || 0)) {
+      throw new ApiError(
+        409,
+        `The ${selectedCategory.name} category is sold out for that quantity`,
+      );
+    }
+  } else if (reserved + quantity > Number(event.expectedTickets || 0)) {
     throw new ApiError(409, "Ticket capacity has been reached");
   }
 
@@ -1690,7 +2314,9 @@ const initializeTicketPurchase = async ({
     now: new Date(),
   });
   const unitPriceNaira = event.isPaid
-    ? Number(dynamicPricing.currentTicketPriceNaira || event.ticketPriceNaira || 0)
+    ? selectedCategory
+      ? Number(selectedCategory.priceNaira || 0)
+      : Number(dynamicPricing.currentTicketPriceNaira || event.ticketPriceNaira || 0)
     : 0;
   const totalPriceNaira = unitPriceNaira * quantity;
   const attendeeEmail = String(payload.email || buyer.email || "").trim().toLowerCase();
@@ -1726,6 +2352,8 @@ const initializeTicketPurchase = async ({
         organizerUserId: event.organizerUserId,
         buyerUserId: actorUserId,
         quantity,
+        ticketCategoryId: selectedCategory?._id || null,
+        ticketCategoryName: selectedCategory?.name || "",
         unitPriceNaira,
         totalPriceNaira,
         currency: "NGN",
@@ -1735,11 +2363,20 @@ const initializeTicketPurchase = async ({
           pricing: dynamicPricing.pricingInsight,
           basePriceNaira: Number(event.ticketPriceNaira || 0),
           appliedUnitPriceNaira: unitPriceNaira,
+          ticketCategoryId: selectedCategory ? String(selectedCategory._id) : null,
+          ticketCategoryName: selectedCategory?.name || null,
         },
         attendeeName: String(payload.attendeeName || buyer.fullName || "").trim(),
         attendeeEmail,
         ticketCode,
-        barcodeValue,
+        barcodeValue: selectedCategory
+          ? JSON.stringify({
+              provider: "vera",
+              ticketCode,
+              eventId: String(event._id),
+              ticketCategoryId: String(selectedCategory._id),
+            })
+          : barcodeValue,
         paidAt: event.isPaid && !shouldBypassPaystack ? null : new Date(),
         verifiedAt: event.isPaid && !shouldBypassPaystack ? null : new Date(),
       });
@@ -1772,31 +2409,30 @@ const initializeTicketPurchase = async ({
       requiresPayment: false,
       ticket: baseTicket,
       payment: null,
+      paymentAttemptId: null,
+      kind: "ticket_purchase",
     };
   }
 
-  const callbackUrl = payload.callbackUrl || env.paystackCallbackUrl || undefined;
+  const callbackUrl = String(payload.callbackUrl || env.paystackCallbackUrl || "").trim();
   const paystackAmountKobo = Math.round(totalPriceNaira * 100);
-
-  const metadata = {
-    source: "vera-mobile",
-    ticketId: String(baseTicket._id),
-    eventId: String(event._id),
-    buyerUserId: String(actorUserId),
-    quantity,
-  };
-
-  let paymentData;
+  let paymentAttempt;
 
   try {
-    paymentData = await paystackRequest("/transaction/initialize", {
-      method: "POST",
-      body: {
-        email: attendeeEmail,
-        amount: paystackAmountKobo,
-        currency: "NGN",
-        callback_url: callbackUrl,
-        metadata,
+    paymentAttempt = await createPaymentAttemptForCheckout({
+      kind: "ticket_purchase",
+      buyerUserId: actorUserId,
+      eventId: event._id,
+      ticketId: baseTicket._id,
+      amountKobo: paystackAmountKobo,
+      callbackUrl,
+      email: attendeeEmail,
+      referenceSuffix: String(baseTicket._id),
+      metadata: {
+        ticketId: String(baseTicket._id),
+        eventId: String(event._id),
+        buyerUserId: String(actorUserId),
+        quantity,
       },
     });
   } catch (error) {
@@ -1811,39 +2447,22 @@ const initializeTicketPurchase = async ({
     throw error;
   }
 
-  const paystackReference = String(paymentData.reference || "").trim();
-
-  if (!paystackReference) {
-    baseTicket.status = "cancelled";
-    baseTicket.cancelledAt = new Date();
-    baseTicket.paymentMetadata = {
-      ...(baseTicket.paymentMetadata || {}),
-      initializePayload: paymentData,
-      initializeError: "Missing payment reference from Paystack",
-    };
-    await baseTicket.save();
-    throw new ApiError(502, "Paystack did not return a valid payment reference");
-  }
-
-  baseTicket.paymentReference = paystackReference;
-  baseTicket.paymentAuthorizationUrl = String(
-    paymentData.authorization_url || "",
-  ).trim();
-  baseTicket.paymentAccessCode = String(paymentData.access_code || "").trim();
+  baseTicket.paymentReference = paymentAttempt.reference;
+  baseTicket.paymentAuthorizationUrl = paymentAttempt.authorizationUrl;
+  baseTicket.paymentAccessCode = paymentAttempt.accessCode;
   baseTicket.paymentMetadata = {
     ...(baseTicket.paymentMetadata || {}),
-    initializePayload: paymentData,
+    initializePayload: paymentAttempt.paystackInitializePayload,
+    paymentAttemptId: String(paymentAttempt._id),
   };
   await baseTicket.save();
 
   return {
     requiresPayment: true,
     ticket: baseTicket,
-    payment: {
-      reference: baseTicket.paymentReference,
-      authorizationUrl: baseTicket.paymentAuthorizationUrl,
-      accessCode: baseTicket.paymentAccessCode,
-    },
+    payment: buildCheckoutPayment(paymentAttempt),
+    paymentAttemptId: String(paymentAttempt._id),
+    kind: "ticket_purchase",
   };
 };
 
@@ -1880,13 +2499,45 @@ const verifyTicketPayment = async ({
     throw new ApiError(400, "Payment reference is required for verification");
   }
 
-  const paymentData = await paystackRequest(
-    `/transaction/verify/${encodeURIComponent(paymentReference)}`,
-  );
+  const paymentAttempt = await getPaymentAttemptForVerification({
+    reference: paymentReference,
+    ticketId: ticket._id,
+    kind: "ticket_purchase",
+  });
 
+  if (paymentAttempt?.fulfillmentStatus === "done") {
+    if (ticket.status !== "paid" && ticket.status !== "used") {
+      const verifiedPayload =
+        paymentAttempt.paystackVerifyPayload ||
+        (await verifyPaystackTransaction(paymentReference));
+
+      await finalizeTicketPurchasePayment({
+        ticket,
+        paymentAttempt,
+        paymentReference,
+        paymentData: verifiedPayload,
+      });
+    }
+
+    return {
+      ticket,
+      paymentStatus: "success",
+      alreadyVerified: true,
+    };
+  }
+
+  const paymentData = await verifyPaystackTransaction(paymentReference);
   const paidStatus = String(paymentData.status || "").toLowerCase();
 
   if (paidStatus !== "success") {
+    if (paymentAttempt) {
+      paymentAttempt.status =
+        paidStatus === "abandoned" ? "abandoned" : "failed";
+      paymentAttempt.paystackVerifyPayload = paymentData;
+      paymentAttempt.failureReason = "Payment has not been completed";
+      await paymentAttempt.save();
+    }
+
     throw new ApiError(402, "Payment has not been completed", {
       paymentStatus: paidStatus,
     });
@@ -1896,21 +2547,24 @@ const verifyTicketPayment = async ({
   const expectedKobo = Math.round(Number(ticket.totalPriceNaira || 0) * 100);
 
   if (amountKobo < expectedKobo) {
+    await markPaymentAttemptFulfillmentFailed({
+      paymentAttempt,
+      paymentData,
+      reason: "Paid amount is below the expected ticket amount",
+    });
+
     throw new ApiError(409, "Paid amount is below the expected ticket amount", {
       amountKobo,
       expectedKobo,
     });
   }
 
-  ticket.status = "paid";
-  ticket.paidAt = ticket.paidAt || new Date();
-  ticket.verifiedAt = new Date();
-  ticket.paymentReference = paymentReference;
-  ticket.paymentMetadata = {
-    ...(ticket.paymentMetadata || {}),
-    verifyPayload: paymentData,
-  };
-  await ticket.save();
+  await finalizeTicketPurchasePayment({
+    ticket,
+    paymentAttempt,
+    paymentReference,
+    paymentData,
+  });
 
   return {
     ticket,
@@ -2265,28 +2919,1302 @@ const listOrganizerTicketSales = async ({
 };
 
 const getTicketById = async ({ ticketId, actorUserId }) => {
-  const ticket = await EventTicket.findById(ticketId)
-    .populate({
-      path: "eventId",
-      populate: {
-        path: "organizerUserId",
-        select: "fullName email avatarUrl title",
-      },
-    })
-    .populate("usedByUserId", "fullName email avatarUrl title");
+  let ticket = await populateResaleTicketQuery(EventTicket.findById(ticketId))
+    .populate("acceptedBidId");
 
   if (!ticket) {
     throw new ApiError(404, "Ticket not found");
   }
 
-  const isBuyer = String(ticket.buyerUserId) === String(actorUserId);
-  const isOrganizer = String(ticket.organizerUserId) === String(actorUserId);
+  ticket = await expireAcceptedResaleOffer({ ticket });
+
+  const isBuyer = toIdString(ticket.buyerUserId) === String(actorUserId);
+  const isOrganizer = toIdString(ticket.organizerUserId) === String(actorUserId);
 
   if (!isBuyer && !isOrganizer) {
     throw new ApiError(403, "You cannot access this ticket");
   }
 
   return ticket;
+};
+
+const listEventResaleMarketplace = async ({
+  eventId,
+  actorUserId,
+  page = 1,
+  limit = 20,
+}) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeViewedBy(event, actorUserId);
+
+  const pageNumber = Math.max(1, Number(page) || 1);
+  const limitNumber = Math.min(50, Math.max(1, Number(limit) || 20));
+  const skip = (pageNumber - 1) * limitNumber;
+
+  const baseQuery = {
+    eventId: event._id,
+    status: "paid",
+    $or: [
+      { resaleStatus: "listed" },
+      {
+        resaleStatus: "offer-accepted",
+        resaleBuyerUserId: actorUserId,
+      },
+    ],
+  };
+
+  const [rawItems, totalItems] = await Promise.all([
+    populateResaleTicketQuery(
+      EventTicket.find(baseQuery)
+        .sort({ resaleListedAt: -1, updatedAt: -1 })
+        .skip(skip)
+        .limit(limitNumber),
+    ),
+    EventTicket.countDocuments(baseQuery),
+  ]);
+
+  const items = [];
+
+  for (const ticket of rawItems) {
+    const normalized = await expireAcceptedResaleOffer({ ticket });
+
+    const reservedForActor =
+      normalized?.resaleStatus === "offer-accepted" &&
+      toIdString(normalized?.resaleBuyerUserId) === String(actorUserId);
+
+    if (normalized?.resaleStatus !== "listed" && !reservedForActor) {
+      continue;
+    }
+
+    const formatted = await formatResaleTicketForResponse(normalized, actorUserId);
+
+    if (formatted) {
+      items.push(formatted);
+    }
+  }
+
+  return {
+    items,
+    ...buildPaginationMeta({
+      page: pageNumber,
+      limit: limitNumber,
+      totalItems,
+    }),
+  };
+};
+
+const createTicketResale = async ({ ticketId, actorUserId, payload }) => {
+  let ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  const { event, policy } = await ensureTicketEligibleForResale({
+    ticket,
+    actorUserId,
+  });
+
+  ticket = await expireAcceptedResaleOffer({ ticket });
+
+  if (ticket.resaleStatus === "offer-accepted") {
+    throw new ApiError(409, "This ticket already has an accepted buyer");
+  }
+
+  const priceNaira = Math.max(1, Math.round(Number(payload.priceNaira || 0)));
+  const requestedQuantity = Math.max(1, Number(payload.quantity || 1));
+
+  if (requestedQuantity > Math.max(1, Number(ticket.quantity || 1))) {
+    throw new ApiError(400, "You cannot list more tickets than you currently hold");
+  }
+
+  const resaleQuantity = requestedQuantity;
+  const baseCostNaira = Math.max(
+    1,
+    Math.round(Number(ticket.unitPriceNaira || 0) * resaleQuantity),
+  );
+  const maxAllowedPrice = Math.max(
+    1,
+    Math.round(
+      baseCostNaira * (1 + policy.maxMarkupPercent / 100),
+    ),
+  );
+
+  if (priceNaira > maxAllowedPrice) {
+    throw new ApiError(
+      400,
+      `This event caps resale at ₦${maxAllowedPrice.toLocaleString()}`,
+    );
+  }
+
+  const allowBids =
+    payload.allowBids === undefined ? policy.allowBids : Boolean(payload.allowBids);
+  const now = new Date();
+
+  await TicketResaleBid.updateMany(
+    {
+      ticketId: ticket._id,
+      status: "open",
+    },
+    {
+      $set: {
+        status: "rejected",
+        respondedAt: now,
+      },
+    },
+  );
+
+  const updated = await populateResaleTicketQuery(
+    EventTicket.findByIdAndUpdate(
+      ticket._id,
+      {
+        $set: {
+        resaleStatus: "listed",
+        resalePriceNaira: priceNaira,
+        resaleQuantity,
+        resaleAllowBids: allowBids,
+        resaleListedAt: now,
+        acceptedBidId: null,
+          acceptedBidExpiresAt: null,
+          resaleBuyerUserId: null,
+        },
+      },
+      { new: true },
+    ),
+  );
+
+  return formatResaleTicketForResponse(updated, actorUserId);
+};
+
+const cancelTicketResale = async ({ ticketId, actorUserId }) => {
+  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  const now = new Date();
+
+  await TicketResaleBid.updateMany(
+    {
+      ticketId: ticket._id,
+      status: { $in: ["open", "accepted"] },
+    },
+    {
+      $set: {
+        status: "rejected",
+        respondedAt: now,
+      },
+    },
+  );
+
+  const updated = await clearTicketResaleFields(ticket._id);
+  return updated;
+};
+
+const listTicketResaleBids = async ({
+  ticketId,
+  actorUserId,
+  page = 1,
+  limit = 20,
+}) => {
+  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  await expireAcceptedResaleOffer({ ticket });
+
+  const pageNumber = Math.max(1, Number(page) || 1);
+  const limitNumber = Math.min(50, Math.max(1, Number(limit) || 20));
+  const skip = (pageNumber - 1) * limitNumber;
+
+  const query = {
+    ticketId: ticket._id,
+  };
+
+  const [items, totalItems] = await Promise.all([
+    TicketResaleBid.find(query)
+      .populate("bidderUserId", "fullName email avatarUrl title")
+      .sort({
+        status: 1,
+        amountNaira: -1,
+        createdAt: 1,
+      })
+      .skip(skip)
+      .limit(limitNumber),
+    TicketResaleBid.countDocuments(query),
+  ]);
+
+  return {
+    items,
+    ...buildPaginationMeta({
+      page: pageNumber,
+      limit: limitNumber,
+      totalItems,
+    }),
+  };
+};
+
+const createTicketResaleBid = async ({ ticketId, actorUserId, payload }) => {
+  let ticket = await populateResaleTicketQuery(EventTicket.findById(ticketId));
+
+  if (!ticket) {
+    throw new ApiError(404, "Ticket not found");
+  }
+
+  ticket = await expireAcceptedResaleOffer({ ticket });
+
+  if (ticket.resaleStatus !== "listed") {
+    throw new ApiError(400, "This ticket is not open for resale");
+  }
+
+  if (!ticket.resaleAllowBids) {
+    throw new ApiError(400, "Bidding is disabled for this ticket");
+  }
+
+  if (ticket.status !== "paid" || ticket.usedAt || ticket.status === "used") {
+    throw new ApiError(400, "This ticket can no longer be resold");
+  }
+
+  if (toIdString(ticket.buyerUserId) === String(actorUserId)) {
+    throw new ApiError(400, "You already own this ticket");
+  }
+
+  const amountNaira = Math.max(1, Math.round(Number(payload.amountNaira || 0)));
+  const maxBid = Math.max(1, Math.round(Number(ticket.resalePriceNaira || 0)));
+
+  if (amountNaira > maxBid) {
+    throw new ApiError(
+      400,
+      `Bids cannot exceed the asking price of ₦${maxBid.toLocaleString()}`,
+    );
+  }
+
+  const now = new Date();
+  const existing = await TicketResaleBid.findOne({
+    ticketId: ticket._id,
+    bidderUserId: actorUserId,
+    status: "open",
+  });
+
+  let bid = null;
+
+  if (existing) {
+    existing.amountNaira = amountNaira;
+    existing.respondedAt = null;
+    await existing.save();
+    bid = existing;
+  } else {
+    bid = await TicketResaleBid.create({
+      ticketId: ticket._id,
+      eventId: ticket.eventId?._id || ticket.eventId,
+      sellerUserId: ticket.buyerUserId?._id || ticket.buyerUserId,
+      bidderUserId: actorUserId,
+      amountNaira,
+      status: "open",
+    });
+  }
+
+  await bid.populate("bidderUserId", "fullName email avatarUrl title");
+
+  const sellerUserId = toIdString(ticket.buyerUserId);
+
+  if (sellerUserId) {
+    void createNotification({
+      userId: sellerUserId,
+      type: "ticket.resale.bid_placed",
+      title: "New bid on your ticket",
+      message: `${bid.bidderUserId?.fullName || "A buyer"} offered ₦${amountNaira.toLocaleString()}.`,
+      data: {
+        target: "ticket-resale",
+        ticketId: String(ticket._id),
+        eventId: toIdString(ticket.eventId),
+      },
+      push: true,
+    }).catch(() => null);
+  }
+
+  return bid;
+};
+
+const acceptTicketResaleBid = async ({ ticketId, bidId, actorUserId }) => {
+  let ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  const { event, policy } = await ensureTicketEligibleForResale({
+    ticket,
+    actorUserId,
+  });
+
+  ticket = await expireAcceptedResaleOffer({ ticket });
+
+  if (ticket.resaleStatus !== "listed") {
+    throw new ApiError(400, "This ticket is not currently accepting bids");
+  }
+
+  const bid = await TicketResaleBid.findOne({
+    _id: bidId,
+    ticketId: ticket._id,
+    status: "open",
+  }).populate("bidderUserId", "fullName email avatarUrl title");
+
+  if (!bid) {
+    throw new ApiError(404, "Bid not found");
+  }
+
+  const now = new Date();
+  const expiresAt = new Date(
+    now.getTime() + policy.bidWindowHours * 60 * 60 * 1000,
+  );
+
+  await TicketResaleBid.updateOne(
+    { _id: bid._id },
+    {
+      $set: {
+        status: "accepted",
+        respondedAt: now,
+        expiresAt,
+      },
+    },
+  );
+
+  const rejectedBids = await TicketResaleBid.find({
+    ticketId: ticket._id,
+    status: "open",
+    _id: { $ne: bid._id },
+  })
+    .select("_id bidderUserId")
+    .lean();
+
+  if (rejectedBids.length) {
+    await TicketResaleBid.updateMany(
+      {
+        _id: { $in: rejectedBids.map((item) => item._id) },
+      },
+      {
+        $set: {
+          status: "rejected",
+          respondedAt: now,
+        },
+      },
+    );
+  }
+
+  await EventTicket.updateOne(
+    { _id: ticket._id },
+    {
+      $set: {
+        resaleStatus: "offer-accepted",
+        acceptedBidId: bid._id,
+        acceptedBidExpiresAt: expiresAt,
+        resaleBuyerUserId: bid.bidderUserId?._id || bid.bidderUserId,
+      },
+    },
+  );
+
+  void createNotification({
+    userId: bid.bidderUserId?._id || bid.bidderUserId,
+    type: "ticket.resale.bid_accepted",
+    title: "Your bid was accepted",
+    message: `Complete payment for ${event.name} within ${policy.bidWindowHours} hours.`,
+    data: {
+      target: "ticket-resale",
+      ticketId: String(ticket._id),
+      eventId: String(event._id),
+      bidId: String(bid._id),
+    },
+    push: true,
+  }).catch(() => null);
+
+  for (const rejected of rejectedBids) {
+    void createNotification({
+      userId: rejected.bidderUserId,
+      type: "ticket.resale.bid_rejected",
+      title: "Bid not accepted",
+      message: "The seller chose another buyer for this ticket.",
+      data: {
+        target: "ticket-resale",
+        ticketId: String(ticket._id),
+        eventId: String(event._id),
+      },
+      push: true,
+    }).catch(() => null);
+  }
+
+  return TicketResaleBid.findById(bid._id).populate(
+    "bidderUserId",
+    "fullName email avatarUrl title",
+  );
+};
+
+const rejectTicketResaleBid = async ({ ticketId, bidId, actorUserId }) => {
+  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+
+  const bid = await TicketResaleBid.findOne({
+    _id: bidId,
+    ticketId: ticket._id,
+    status: "open",
+  }).populate("bidderUserId", "fullName email avatarUrl title");
+
+  if (!bid) {
+    throw new ApiError(404, "Bid not found");
+  }
+
+  await TicketResaleBid.updateOne(
+    { _id: bid._id },
+    {
+      $set: {
+        status: "rejected",
+        respondedAt: new Date(),
+      },
+    },
+  );
+
+  void createNotification({
+    userId: bid.bidderUserId?._id || bid.bidderUserId,
+    type: "ticket.resale.bid_rejected",
+    title: "Bid rejected",
+    message: "The seller declined your offer on this ticket.",
+    data: {
+      target: "ticket-resale",
+      ticketId: String(ticket._id),
+      eventId: toIdString(ticket.eventId),
+      bidId: String(bid._id),
+    },
+    push: true,
+  }).catch(() => null);
+
+  return TicketResaleBid.findById(bid._id).populate(
+    "bidderUserId",
+    "fullName email avatarUrl title",
+  );
+};
+
+const purchaseResaleTicket = async ({
+  ticketId,
+  actorUserId,
+  paymentReference = "",
+  paymentAttemptId = null,
+  paymentData = null,
+}) => {
+  let ticket = await populateResaleTicketQuery(EventTicket.findById(ticketId));
+
+  if (!ticket) {
+    throw new ApiError(404, "Ticket not found");
+  }
+
+  ticket = await expireAcceptedResaleOffer({ ticket });
+
+  if (ticket.resaleStatus !== "listed" && ticket.resaleStatus !== "offer-accepted") {
+    throw new ApiError(400, "This ticket is not available to buy");
+  }
+
+  if (ticket.status !== "paid" || ticket.usedAt || ticket.status === "used") {
+    throw new ApiError(400, "This ticket can no longer be transferred");
+  }
+
+  const sellerUserId = toIdString(ticket.buyerUserId);
+  const normalizedPaymentReference = String(paymentReference || "").trim();
+  const isPaymentBackedTransfer = Boolean(
+    normalizedPaymentReference || paymentAttemptId || paymentData,
+  );
+
+  if (sellerUserId === String(actorUserId)) {
+    throw new ApiError(400, "You already own this ticket");
+  }
+
+  const buyer = await User.findById(actorUserId).select("fullName email");
+
+  if (!buyer) {
+    throw new ApiError(404, "Buyer account not found");
+  }
+
+  let saleAmountNaira = Math.max(1, Math.round(Number(ticket.resalePriceNaira || 0)));
+  let acceptedBid = null;
+  const listedQuantity = Math.min(
+    Math.max(1, Number(ticket.resaleQuantity || 1)),
+    Math.max(1, Number(ticket.quantity || 1)),
+  );
+
+  if (ticket.resaleStatus === "offer-accepted") {
+    if (toIdString(ticket.resaleBuyerUserId) !== String(actorUserId)) {
+      throw new ApiError(403, "This offer is reserved for another buyer");
+    }
+
+    if (ticket.acceptedBidId) {
+      acceptedBid = await TicketResaleBid.findById(ticket.acceptedBidId);
+
+      if (!acceptedBid || acceptedBid.status !== "accepted") {
+        throw new ApiError(400, "This accepted bid is no longer valid");
+      }
+    }
+
+    if (
+      ((acceptedBid?.expiresAt &&
+        new Date(acceptedBid.expiresAt).getTime() <= Date.now()) ||
+        (ticket.acceptedBidExpiresAt &&
+          new Date(ticket.acceptedBidExpiresAt).getTime() <= Date.now()))
+    ) {
+      await expireAcceptedResaleOffer({ ticket, now: new Date() });
+      throw new ApiError(400, "The payment window expired for this offer");
+    }
+
+    if (acceptedBid) {
+      saleAmountNaira = Math.max(
+        1,
+        Math.round(Number(acceptedBid.amountNaira || saleAmountNaira)),
+      );
+    }
+  } else if (ticket.resaleAllowBids) {
+    throw new ApiError(400, "This listing requires a bid before payment");
+  }
+
+  const now = new Date();
+  let transferredTicketId = ticket._id;
+
+  if (listedQuantity < Number(ticket.quantity || 1)) {
+    const transferredTicketCode = await buildTicketCode();
+    const transferredUnitPrice = Math.max(
+      0,
+      Math.round(saleAmountNaira / listedQuantity),
+    );
+
+    const createdTicket = await EventTicket.create({
+      eventId: ticket.eventId?._id || ticket.eventId,
+      workspaceId: ticket.workspaceId || null,
+      organizerUserId: ticket.organizerUserId?._id || ticket.organizerUserId,
+      buyerUserId: buyer._id,
+      quantity: listedQuantity,
+      ticketCategoryId: ticket.ticketCategoryId || null,
+      ticketCategoryName: ticket.ticketCategoryName || "",
+      unitPriceNaira: transferredUnitPrice,
+      totalPriceNaira: saleAmountNaira,
+      currency: ticket.currency || "NGN",
+      status: "paid",
+      paymentProvider: isPaymentBackedTransfer ? "paystack" : "none",
+      paymentReference: normalizedPaymentReference || null,
+      paymentMetadata: {
+        ...(ticket.paymentMetadata || {}),
+        resale: {
+          previousBuyerUserId: sellerUserId,
+          soldToUserId: String(buyer._id),
+          soldAt: now,
+          amountNaira: saleAmountNaira,
+          sourceTicketId: String(ticket._id),
+        },
+        paymentAttemptId: paymentAttemptId ? String(paymentAttemptId) : undefined,
+        verifyPayload: paymentData || undefined,
+      },
+      attendeeName: String(buyer.fullName || "").trim(),
+      attendeeEmail: String(buyer.email || "").trim().toLowerCase(),
+      ticketCode: transferredTicketCode,
+      barcodeValue: ticket.ticketCategoryId
+        ? JSON.stringify({
+            provider: "vera",
+            ticketCode: transferredTicketCode,
+            eventId: String(ticket.eventId?._id || ticket.eventId),
+            ticketCategoryId: String(ticket.ticketCategoryId),
+          })
+        : transferredTicketCode,
+      paidAt: now,
+      verifiedAt: now,
+      lastTransferredAt: now,
+    });
+
+    transferredTicketId = createdTicket._id;
+
+    await EventTicket.updateOne(
+      { _id: ticket._id },
+      {
+        $set: {
+          quantity: Math.max(1, Number(ticket.quantity || 1) - listedQuantity),
+          totalPriceNaira:
+            Math.max(1, Number(ticket.quantity || 1) - listedQuantity) *
+            Math.max(0, Number(ticket.unitPriceNaira || 0)),
+          paymentMetadata: {
+            ...(ticket.paymentMetadata || {}),
+            resale: {
+              previousBuyerUserId: sellerUserId,
+              soldToUserId: String(buyer._id),
+              soldAt: now,
+              amountNaira: saleAmountNaira,
+              splitQuantity: listedQuantity,
+              transferredTicketId: String(createdTicket._id),
+            },
+          },
+          lastTransferredAt: now,
+          resaleStatus: "none",
+          resalePriceNaira: null,
+          resaleQuantity: null,
+          resaleAllowBids: false,
+          resaleListedAt: null,
+          acceptedBidId: null,
+          acceptedBidExpiresAt: null,
+          resaleBuyerUserId: null,
+        },
+      },
+    );
+  } else {
+    await EventTicket.updateOne(
+      { _id: ticket._id },
+      {
+        $set: {
+          buyerUserId: buyer._id,
+          attendeeName: String(buyer.fullName || "").trim(),
+          attendeeEmail: String(buyer.email || "").trim().toLowerCase(),
+          unitPriceNaira: Math.max(0, Math.round(saleAmountNaira / listedQuantity)),
+          totalPriceNaira: saleAmountNaira,
+          paymentProvider: isPaymentBackedTransfer ? "paystack" : "none",
+          paymentReference: normalizedPaymentReference || null,
+          paymentAuthorizationUrl: "",
+          paymentAccessCode: "",
+          paidAt: now,
+          verifiedAt: now,
+          paymentMetadata: {
+            ...(ticket.paymentMetadata || {}),
+            resale: {
+              previousBuyerUserId: sellerUserId,
+              soldToUserId: String(buyer._id),
+              soldAt: now,
+              amountNaira: saleAmountNaira,
+            },
+            paymentAttemptId: paymentAttemptId ? String(paymentAttemptId) : undefined,
+            verifyPayload: paymentData || undefined,
+          },
+          lastTransferredAt: now,
+          resaleStatus: "none",
+          resalePriceNaira: null,
+          resaleQuantity: null,
+          resaleAllowBids: false,
+          resaleListedAt: null,
+          acceptedBidId: null,
+          acceptedBidExpiresAt: null,
+          resaleBuyerUserId: null,
+        },
+      },
+    );
+  }
+
+  await TicketResaleBid.updateMany(
+    {
+      ticketId: ticket._id,
+      status: "open",
+    },
+    {
+      $set: {
+        status: "rejected",
+        respondedAt: now,
+      },
+    },
+  );
+
+  if (acceptedBid) {
+    await TicketResaleBid.updateOne(
+      { _id: acceptedBid._id },
+      {
+        $set: {
+          status: "paid",
+          respondedAt: now,
+          paidAt: now,
+        },
+      },
+    );
+  }
+
+  const updated = await populateResaleTicketQuery(
+    EventTicket.findById(transferredTicketId),
+  );
+
+  if (sellerUserId) {
+    void createNotification({
+      userId: sellerUserId,
+      type: "ticket.resale.completed",
+      title: "Ticket resold",
+      message: `Your ticket was transferred for ₦${saleAmountNaira.toLocaleString()}.`,
+      data: {
+        target: "ticket-resale",
+        ticketId: String(ticket._id),
+        eventId: toIdString(ticket.eventId),
+      },
+      push: true,
+    }).catch(() => null);
+  }
+
+  void createNotification({
+    userId: String(buyer._id),
+    type: "ticket.resale.purchased",
+    title: "Resale ticket confirmed",
+    message: "Your ticket transfer is complete and ready to use.",
+    data: {
+        target: "ticket-details",
+        ticketId: String(transferredTicketId),
+        eventId: toIdString(ticket.eventId),
+      },
+    push: true,
+  }).catch(() => null);
+
+  return updated;
+};
+
+const initializeResalePurchase = async ({
+  ticketId,
+  actorUserId,
+  payload,
+}) => {
+  let ticket = await populateResaleTicketQuery(EventTicket.findById(ticketId));
+
+  if (!ticket) {
+    throw new ApiError(404, "Ticket not found");
+  }
+
+  ticket = await expireAcceptedResaleOffer({ ticket });
+
+  if (ticket.resaleStatus !== "listed" && ticket.resaleStatus !== "offer-accepted") {
+    throw new ApiError(400, "This ticket is not available to buy");
+  }
+
+  if (ticket.status !== "paid" || ticket.usedAt || ticket.status === "used") {
+    throw new ApiError(400, "This ticket can no longer be transferred");
+  }
+
+  const sellerUserId = toIdString(ticket.buyerUserId);
+
+  if (sellerUserId === String(actorUserId)) {
+    throw new ApiError(400, "You already own this ticket");
+  }
+
+  const buyer = await User.findById(actorUserId).select("fullName email");
+
+  if (!buyer) {
+    throw new ApiError(404, "Buyer account not found");
+  }
+
+  const event =
+    ticket.eventId && typeof ticket.eventId === "object"
+      ? ticket.eventId
+      : await Event.findById(ticket.eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  const shouldBypassPaystack = !env.paystackSecretKey && env.paystackDevBypass;
+
+  if (!env.paystackSecretKey && !shouldBypassPaystack) {
+    throw new ApiError(
+      503,
+      "Paid resale checkout is not configured yet. Set PAYSTACK_SECRET_KEY.",
+    );
+  }
+
+  let saleAmountNaira = Math.max(1, Math.round(Number(ticket.resalePriceNaira || 0)));
+  let acceptedBid = null;
+  let reservedInThisCall = false;
+  const listedQuantity = Math.min(
+    Math.max(1, Number(ticket.resaleQuantity || 1)),
+    Math.max(1, Number(ticket.quantity || 1)),
+  );
+
+  if (ticket.resaleStatus === "offer-accepted") {
+    if (toIdString(ticket.resaleBuyerUserId) !== String(actorUserId)) {
+      throw new ApiError(403, "This offer is reserved for another buyer");
+    }
+
+    if (ticket.acceptedBidId) {
+      acceptedBid = await TicketResaleBid.findById(ticket.acceptedBidId);
+
+      if (!acceptedBid || acceptedBid.status !== "accepted") {
+        throw new ApiError(400, "This accepted bid is no longer valid");
+      }
+    }
+
+    if (
+      (acceptedBid?.expiresAt &&
+        new Date(acceptedBid.expiresAt).getTime() <= Date.now()) ||
+      (ticket.acceptedBidExpiresAt &&
+        new Date(ticket.acceptedBidExpiresAt).getTime() <= Date.now())
+    ) {
+      await expireAcceptedResaleOffer({ ticket, now: new Date() });
+      throw new ApiError(400, "The payment window expired for this offer");
+    }
+
+    if (acceptedBid) {
+      saleAmountNaira = Math.max(
+        1,
+        Math.round(Number(acceptedBid.amountNaira || saleAmountNaira)),
+      );
+    }
+  } else {
+    if (ticket.resaleAllowBids) {
+      throw new ApiError(400, "This listing requires a bid before payment");
+    }
+
+    const resalePolicy = normalizeEventResalePolicy(event);
+    const acceptedBidExpiresAt = new Date(
+      Date.now() + resalePolicy.bidWindowHours * 60 * 60 * 1000,
+    );
+
+    await EventTicket.updateOne(
+      {
+        _id: ticket._id,
+        resaleStatus: "listed",
+      },
+      {
+        $set: {
+          resaleStatus: "offer-accepted",
+          acceptedBidId: null,
+          acceptedBidExpiresAt,
+          resaleBuyerUserId: actorUserId,
+        },
+      },
+    );
+
+    reservedInThisCall = true;
+    ticket = await populateResaleTicketQuery(EventTicket.findById(ticket._id));
+  }
+
+  if (shouldBypassPaystack) {
+    const transferredTicket = await purchaseResaleTicket({
+      ticketId: String(ticket._id),
+      actorUserId,
+      paymentReference: generatePaystackReference(
+        "ticket_resale_purchase",
+        String(ticket._id),
+      ),
+      paymentData: {
+        status: "success",
+        amount: Math.round(saleAmountNaira * 100),
+        currency: "NGN",
+      },
+    });
+
+    return {
+      requiresPayment: false,
+      ticket: transferredTicket,
+      payment: null,
+      paymentAttemptId: null,
+      kind: "ticket_resale_purchase",
+    };
+  }
+
+  try {
+    const paymentAttempt = await createPaymentAttemptForCheckout({
+      kind: "ticket_resale_purchase",
+      buyerUserId: actorUserId,
+      eventId: event._id,
+      resaleSourceTicketId: ticket._id,
+      acceptedBidId: acceptedBid?._id || ticket.acceptedBidId || null,
+      amountKobo: Math.round(saleAmountNaira * 100),
+      callbackUrl: String(payload?.callbackUrl || env.paystackCallbackUrl || "").trim(),
+      email: String(buyer.email || "").trim().toLowerCase(),
+      referenceSuffix: String(ticket._id),
+      metadata: {
+        resaleSourceTicketId: String(ticket._id),
+        eventId: String(event._id),
+        buyerUserId: String(actorUserId),
+        acceptedBidId: acceptedBid ? String(acceptedBid._id) : null,
+        listedQuantity,
+      },
+    });
+
+    return {
+      requiresPayment: true,
+      ticket,
+      payment: buildCheckoutPayment(paymentAttempt),
+      paymentAttemptId: String(paymentAttempt._id),
+      kind: "ticket_resale_purchase",
+    };
+  } catch (error) {
+    if (reservedInThisCall) {
+      await EventTicket.updateOne(
+        { _id: ticket._id },
+        {
+          $set: {
+            resaleStatus: "listed",
+            acceptedBidId: null,
+            acceptedBidExpiresAt: null,
+            resaleBuyerUserId: null,
+          },
+        },
+      );
+    }
+
+    throw error;
+  }
+};
+
+const verifyResalePurchase = async ({
+  ticketId,
+  actorUserId,
+  reference,
+}) => {
+  const paymentAttempt = await getPaymentAttemptForVerification({
+    reference,
+    ticketId,
+    kind: "ticket_resale_purchase",
+  });
+
+  if (!paymentAttempt) {
+    throw new ApiError(404, "Could not find a pending resale payment");
+  }
+
+  if (toIdString(paymentAttempt.buyerUserId) !== String(actorUserId)) {
+    throw new ApiError(403, "You can only verify your own resale payment");
+  }
+
+  if (paymentAttempt.fulfillmentStatus === "done") {
+    const fulfilledTicket = await populateResaleTicketQuery(
+      EventTicket.findById(
+        paymentAttempt.fulfillmentTicketId ||
+          paymentAttempt.resaleSourceTicketId ||
+          ticketId,
+      ),
+    );
+
+    if (!fulfilledTicket) {
+      throw new ApiError(404, "Ticket not found");
+    }
+
+    return {
+      ticket: fulfilledTicket,
+      paymentStatus: "success",
+      alreadyVerified: true,
+    };
+  }
+
+  const paymentReference = String(reference || paymentAttempt.reference || "").trim();
+
+  if (!paymentReference) {
+    throw new ApiError(400, "Payment reference is required for verification");
+  }
+
+  const paymentData = await verifyPaystackTransaction(paymentReference);
+  const paidStatus = String(paymentData.status || "").toLowerCase();
+
+  if (paidStatus !== "success") {
+    paymentAttempt.status = paidStatus === "abandoned" ? "abandoned" : "failed";
+    paymentAttempt.paystackVerifyPayload = paymentData;
+    paymentAttempt.failureReason = "Payment has not been completed";
+    await paymentAttempt.save();
+
+    throw new ApiError(402, "Payment has not been completed", {
+      paymentStatus: paidStatus,
+    });
+  }
+
+  const amountKobo = Number(paymentData.amount || 0);
+  const expectedKobo = Math.round(Number(paymentAttempt.amountKobo || 0));
+
+  if (amountKobo < expectedKobo) {
+    await markPaymentAttemptFulfillmentFailed({
+      paymentAttempt,
+      paymentData,
+      reason: "Paid amount is below the expected resale amount",
+    });
+
+    throw new ApiError(409, "Paid amount is below the expected resale amount", {
+      amountKobo,
+      expectedKobo,
+    });
+  }
+
+  let transferredTicket;
+
+  try {
+    transferredTicket = await purchaseResaleTicket({
+      ticketId: String(
+        paymentAttempt.resaleSourceTicketId || paymentAttempt.ticketId || ticketId,
+      ),
+      actorUserId,
+      paymentReference,
+      paymentAttemptId: paymentAttempt._id,
+      paymentData,
+    });
+  } catch (error) {
+    await markPaymentAttemptFulfillmentFailed({
+      paymentAttempt,
+      paymentData,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+
+  await markPaymentAttemptVerified({
+    paymentAttempt,
+    paymentData,
+    fulfillmentTicketId: transferredTicket?._id,
+  });
+
+  return {
+    ticket: transferredTicket,
+    paymentStatus: paidStatus,
+    alreadyVerified: false,
+  };
+};
+
+const processPaystackWebhookEvent = async (payload) => {
+  const eventName = String(payload?.event || "").trim().toLowerCase();
+
+  if (eventName !== "charge.success") {
+    return {
+      ignored: true,
+      event: eventName || "unknown",
+    };
+  }
+
+  const paymentData =
+    payload?.data && typeof payload.data === "object" ? payload.data : null;
+  const paymentReference = String(paymentData?.reference || "").trim();
+
+  if (!paymentReference) {
+    return {
+      ignored: true,
+      event: eventName,
+      reason: "missing_reference",
+    };
+  }
+
+  const paymentAttempt = await PaymentAttempt.findOne({
+    reference: paymentReference,
+  }).sort({ createdAt: -1 });
+
+  if (!paymentAttempt) {
+    const legacyTicket = await EventTicket.findOne({
+      paymentReference,
+      paymentProvider: "paystack",
+    });
+
+    if (!legacyTicket) {
+      return {
+        ignored: true,
+        event: eventName,
+        reason: "unknown_reference",
+        reference: paymentReference,
+      };
+    }
+
+    if (legacyTicket.status !== "paid" && legacyTicket.status !== "used") {
+      await finalizeTicketPurchasePayment({
+        ticket: legacyTicket,
+        paymentReference,
+        paymentData,
+      });
+    }
+
+    return {
+      processed: true,
+      event: eventName,
+      kind: "legacy_ticket_purchase",
+      reference: paymentReference,
+      ticketId: String(legacyTicket._id),
+    };
+  }
+
+  if (paymentAttempt.fulfillmentStatus === "done") {
+    return {
+      processed: true,
+      event: eventName,
+      reference: paymentReference,
+      paymentAttemptId: String(paymentAttempt._id),
+      alreadyFulfilled: true,
+    };
+  }
+
+  const amountKobo = Number(paymentData?.amount || 0);
+  const expectedKobo = Math.round(Number(paymentAttempt.amountKobo || 0));
+  const receivedCurrency = String(
+    paymentData?.currency || paymentAttempt.currency || "NGN",
+  ).toUpperCase();
+  const expectedCurrency = String(paymentAttempt.currency || "NGN").toUpperCase();
+
+  if (receivedCurrency !== expectedCurrency || amountKobo < expectedKobo) {
+    await markPaymentAttemptFulfillmentFailed({
+      paymentAttempt,
+      paymentData,
+      reason: "Webhook amount or currency does not match the expected charge",
+    });
+
+    return {
+      processed: false,
+      event: eventName,
+      reference: paymentReference,
+      reason: "amount_or_currency_mismatch",
+    };
+  }
+
+  try {
+    if (paymentAttempt.kind === "ticket_purchase") {
+      let ticket = paymentAttempt.ticketId
+        ? await EventTicket.findById(paymentAttempt.ticketId)
+        : null;
+
+      if (!ticket) {
+        ticket = await EventTicket.findOne({
+          paymentReference,
+          paymentProvider: "paystack",
+        });
+      }
+
+      if (!ticket) {
+        return {
+          ignored: true,
+          event: eventName,
+          reference: paymentReference,
+          reason: "ticket_not_found",
+        };
+      }
+
+      await finalizeTicketPurchasePayment({
+        ticket,
+        paymentAttempt,
+        paymentReference,
+        paymentData,
+      });
+
+      return {
+        processed: true,
+        event: eventName,
+        kind: "ticket_purchase",
+        reference: paymentReference,
+        paymentAttemptId: String(paymentAttempt._id),
+        ticketId: String(ticket._id),
+      };
+    }
+
+    if (paymentAttempt.kind === "ticket_resale_purchase") {
+      const transferredTicket = await purchaseResaleTicket({
+        ticketId: String(
+          paymentAttempt.resaleSourceTicketId || paymentAttempt.ticketId || "",
+        ),
+        actorUserId: String(paymentAttempt.buyerUserId || ""),
+        paymentReference,
+        paymentAttemptId: paymentAttempt._id,
+        paymentData,
+      });
+
+      await markPaymentAttemptVerified({
+        paymentAttempt,
+        paymentData,
+        fulfillmentTicketId: transferredTicket?._id,
+      });
+
+      return {
+        processed: true,
+        event: eventName,
+        kind: "ticket_resale_purchase",
+        reference: paymentReference,
+        paymentAttemptId: String(paymentAttempt._id),
+        ticketId: String(transferredTicket?._id || ""),
+      };
+    }
+
+    return {
+      ignored: true,
+      event: eventName,
+      reference: paymentReference,
+      reason: "unsupported_payment_kind",
+    };
+  } catch (error) {
+    await markPaymentAttemptFulfillmentFailed({
+      paymentAttempt,
+      paymentData,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+};
+
+const listTicketTodos = async ({ ticketId, actorUserId }) => {
+  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+
+  const items = await TicketTodo.find({
+    ticketId: ticket._id,
+    userId: actorUserId,
+  }).sort({ isCompleted: 1, dueAt: 1, createdAt: 1 });
+
+  return items;
+};
+
+const createTicketTodo = async ({ ticketId, actorUserId, payload }) => {
+  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  const event =
+    ticket.eventId && typeof ticket.eventId === "object"
+      ? ticket.eventId
+      : await Event.findById(ticket.eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  const dueAt = new Date(payload.dueAt);
+  const remindAt = payload.remindAt ? new Date(payload.remindAt) : dueAt;
+
+  const todo = await TicketTodo.create({
+    ticketId: ticket._id,
+    eventId: event._id,
+    userId: actorUserId,
+    title: String(payload.title || "").trim(),
+    notes: String(payload.notes || "").trim(),
+    dueAt,
+    remindAt,
+  });
+
+  return todo;
+};
+
+const updateTicketTodo = async ({ ticketId, todoId, actorUserId, payload }) => {
+  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  const existing = await TicketTodo.findOne({
+    _id: todoId,
+    ticketId: ticket._id,
+    userId: actorUserId,
+  });
+
+  if (!existing) {
+    throw new ApiError(404, "Todo not found");
+  }
+
+  const nextDueAt = payload.dueAt ? new Date(payload.dueAt) : existing.dueAt;
+  const nextRemindAt =
+    payload.remindAt === null
+      ? null
+      : payload.remindAt
+        ? new Date(payload.remindAt)
+        : existing.remindAt;
+
+  if (
+    nextRemindAt &&
+    nextDueAt &&
+    new Date(nextRemindAt).getTime() > new Date(nextDueAt).getTime()
+  ) {
+    throw new ApiError(400, "Reminder cannot be after the due date");
+  }
+
+  existing.title =
+    payload.title !== undefined ? String(payload.title || "").trim() : existing.title;
+  existing.notes =
+    payload.notes !== undefined ? String(payload.notes || "").trim() : existing.notes;
+  existing.dueAt = nextDueAt;
+  existing.remindAt = nextRemindAt;
+
+  if (payload.isCompleted !== undefined) {
+    const isCompleted = Boolean(payload.isCompleted);
+    existing.isCompleted = isCompleted;
+    existing.completedAt = isCompleted ? new Date() : null;
+    existing.notifiedAt = isCompleted ? existing.notifiedAt : null;
+  }
+
+  await existing.save();
+  return existing;
+};
+
+const deleteTicketTodo = async ({ ticketId, todoId, actorUserId }) => {
+  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+
+  const result = await TicketTodo.deleteOne({
+    _id: todoId,
+    ticketId: ticket._id,
+    userId: actorUserId,
+  });
+
+  if (!result.deletedCount) {
+    throw new ApiError(404, "Todo not found");
+  }
+
+  return {
+    deleted: true,
+    todoId: String(todoId),
+  };
 };
 
 const listEventTickets = async ({
@@ -3319,6 +5247,7 @@ module.exports = {
   listMyEvents,
   listFeaturedEvents,
   getEventById,
+  getOrganizerProfileById,
   listEventRatings,
   rateEvent,
   getEventReminder,
@@ -3340,7 +5269,23 @@ module.exports = {
   listMyTickets,
   listOrganizerTicketSales,
   getTicketById,
+  listEventResaleMarketplace,
+  createTicketResale,
+  cancelTicketResale,
+  listTicketResaleBids,
+  createTicketResaleBid,
+  acceptTicketResaleBid,
+  rejectTicketResaleBid,
+  purchaseResaleTicket,
+  initializeResalePurchase,
+  verifyResalePurchase,
+  listTicketTodos,
+  createTicketTodo,
+  updateTicketTodo,
+  deleteTicketTodo,
   listEventTickets,
   resolveOccurrenceWindow,
   normalizeRecurrence,
+  expireAcceptedResaleOfferById,
+  processPaystackWebhookEvent,
 };

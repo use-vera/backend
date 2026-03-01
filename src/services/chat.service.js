@@ -824,6 +824,29 @@ const sendDirectMessage = async ({
     throw new ApiError(404, "Conversation not found");
   }
 
+  const senderName =
+    hydratedMessage?.senderUserId?.fullName ||
+    hydratedMessage?.sender?.fullName ||
+    "Someone";
+
+  const notificationTargets = participantIds.filter(
+    (participantId) => participantId !== senderId,
+  );
+
+  for (const participantId of notificationTargets) {
+    void createNotification({
+      userId: participantId,
+      type: "chat.direct.message",
+      title: senderName,
+      message: toDirectPreviewText(hydratedMessage),
+      data: {
+        target: "chat-thread",
+        conversationId: String(conversation._id),
+      },
+      push: true,
+    }).catch(() => null);
+  }
+
   return {
     conversation: hydratedConversation,
     message: hydratedMessage,

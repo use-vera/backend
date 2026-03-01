@@ -82,6 +82,22 @@ const env = {
     process.env.CHAT_REMINDER_DELAY_MINUTES,
     120,
   ),
+  ticketTodoReminderEnabled: toBoolean(
+    process.env.TICKET_TODO_REMINDER_ENABLED,
+    true,
+  ),
+  ticketTodoReminderTickMs: toNumber(
+    process.env.TICKET_TODO_REMINDER_TICK_MS,
+    5 * 60 * 1000,
+  ),
+  ticketResaleMonitorEnabled: toBoolean(
+    process.env.TICKET_RESALE_MONITOR_ENABLED,
+    true,
+  ),
+  ticketResaleMonitorTickMs: toNumber(
+    process.env.TICKET_RESALE_MONITOR_TICK_MS,
+    5 * 60 * 1000,
+  ),
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || "",
   paystackBaseUrl:
     process.env.PAYSTACK_BASE_URL || "https://api.paystack.co",

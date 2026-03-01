@@ -12,9 +12,13 @@ const {
   listFeaturedEventsQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
+  organizerIdParamsSchema,
   ticketIdParamsSchema,
   postIdParamsSchema,
+  ticketBidParamsSchema,
+  ticketTodoParamsSchema,
   initializeTicketPurchaseSchema,
+  initializeResalePurchaseSchema,
   verifyTicketPaymentSchema,
   ticketCheckInSchema,
   listMyTicketsQuerySchema,
@@ -31,6 +35,12 @@ const {
   listEventPostsQuerySchema,
   createEventPostCommentSchema,
   listEventPostCommentsQuerySchema,
+  createTicketResaleSchema,
+  listTicketResaleBidsQuerySchema,
+  createTicketResaleBidSchema,
+  listEventResaleMarketplaceQuerySchema,
+  createTicketTodoSchema,
+  updateTicketTodoSchema,
 } = require("../validations/event.validation");
 const {
   createEventController,
@@ -38,6 +48,7 @@ const {
   listFeaturedEventsController,
   listMyEventsController,
   getEventController,
+  getOrganizerProfileController,
   listEventRatingsController,
   rateEventController,
   updateEventController,
@@ -49,6 +60,20 @@ const {
   listOrganizerTicketSalesController,
   getTicketController,
   listEventTicketsController,
+  listEventResaleMarketplaceController,
+  createTicketResaleController,
+  cancelTicketResaleController,
+  listTicketResaleBidsController,
+  createTicketResaleBidController,
+  acceptTicketResaleBidController,
+  rejectTicketResaleBidController,
+  purchaseResaleTicketController,
+  initializeResalePurchaseController,
+  verifyResalePurchaseController,
+  listTicketTodosController,
+  createTicketTodoController,
+  updateTicketTodoController,
+  deleteTicketTodoController,
   listEventFeedController,
   getEventReminderController,
   updateEventReminderController,
@@ -73,6 +98,11 @@ router.get(
   "/featured",
   validateQuery(listFeaturedEventsQuerySchema),
   listFeaturedEventsController,
+);
+router.get(
+  "/organizers/:organizerId",
+  validateParams(organizerIdParamsSchema),
+  getOrganizerProfileController,
 );
 router.get("/mine", validateQuery(listMyEventsQuerySchema), listMyEventsController);
 router.post("/", validateBody(createEventSchema), createEventController);
@@ -103,12 +133,90 @@ router.post(
   validateBody(verifyTicketPaymentSchema),
   verifyTicketPaymentController,
 );
+router.post(
+  "/tickets/:ticketId/resale",
+  validateParams(ticketIdParamsSchema),
+  validateBody(createTicketResaleSchema),
+  createTicketResaleController,
+);
+router.delete(
+  "/tickets/:ticketId/resale",
+  validateParams(ticketIdParamsSchema),
+  cancelTicketResaleController,
+);
+router.get(
+  "/tickets/:ticketId/resale-bids",
+  validateParams(ticketIdParamsSchema),
+  validateQuery(listTicketResaleBidsQuerySchema),
+  listTicketResaleBidsController,
+);
+router.post(
+  "/tickets/:ticketId/resale-bids",
+  validateParams(ticketIdParamsSchema),
+  validateBody(createTicketResaleBidSchema),
+  createTicketResaleBidController,
+);
+router.post(
+  "/tickets/:ticketId/resale-bids/:bidId/accept",
+  validateParams(ticketBidParamsSchema),
+  acceptTicketResaleBidController,
+);
+router.post(
+  "/tickets/:ticketId/resale-bids/:bidId/reject",
+  validateParams(ticketBidParamsSchema),
+  rejectTicketResaleBidController,
+);
+router.post(
+  "/tickets/:ticketId/resale-purchase/initialize",
+  validateParams(ticketIdParamsSchema),
+  validateBody(initializeResalePurchaseSchema),
+  initializeResalePurchaseController,
+);
+router.post(
+  "/tickets/:ticketId/resale-purchase/verify",
+  validateParams(ticketIdParamsSchema),
+  validateBody(verifyTicketPaymentSchema),
+  verifyResalePurchaseController,
+);
+router.post(
+  "/tickets/:ticketId/resale-purchase",
+  validateParams(ticketIdParamsSchema),
+  purchaseResaleTicketController,
+);
+router.get(
+  "/tickets/:ticketId/todos",
+  validateParams(ticketIdParamsSchema),
+  listTicketTodosController,
+);
+router.post(
+  "/tickets/:ticketId/todos",
+  validateParams(ticketIdParamsSchema),
+  validateBody(createTicketTodoSchema),
+  createTicketTodoController,
+);
+router.patch(
+  "/tickets/:ticketId/todos/:todoId",
+  validateParams(ticketTodoParamsSchema),
+  validateBody(updateTicketTodoSchema),
+  updateTicketTodoController,
+);
+router.delete(
+  "/tickets/:ticketId/todos/:todoId",
+  validateParams(ticketTodoParamsSchema),
+  deleteTicketTodoController,
+);
 
 router.get(
   "/:eventId/ratings",
   validateParams(eventIdParamsSchema),
   validateQuery(listEventRatingsQuerySchema),
   listEventRatingsController,
+);
+router.get(
+  "/:eventId/resale-marketplace",
+  validateParams(eventIdParamsSchema),
+  validateQuery(listEventResaleMarketplaceQuerySchema),
+  listEventResaleMarketplaceController,
 );
 router.post(
   "/:eventId/ratings",
