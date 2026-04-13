@@ -209,6 +209,8 @@ const createAttendanceLog = async ({
           consecutiveMisses: 0,
           lastMonitorCheckAt: new Date(),
           autoCheckoutReason: "",
+          lastAutoCheckoutWarningAt: null,
+          lastAutoCheckoutWarningMissCount: 0,
         },
       },
       {
@@ -237,6 +239,8 @@ const createAttendanceLog = async ({
           consecutiveMisses: 0,
           lastMonitorCheckAt: new Date(),
           autoCheckoutReason: "",
+          lastAutoCheckoutWarningAt: null,
+          lastAutoCheckoutWarningMissCount: 0,
         },
       },
       {
@@ -285,6 +289,11 @@ const pingAttendanceSession = async ({
   activeSession.consecutiveMisses = signal.withinGeofence
     ? 0
     : activeSession.consecutiveMisses;
+  if (signal.withinGeofence) {
+    activeSession.autoCheckoutReason = "";
+    activeSession.lastAutoCheckoutWarningAt = null;
+    activeSession.lastAutoCheckoutWarningMissCount = 0;
+  }
   await activeSession.save();
 
   await syncRecurringPresenceFromSignal({
@@ -369,7 +378,7 @@ const listAttendanceLogs = async ({
 
   const [items, totalItems] = await Promise.all([
     AttendanceLog.find(query)
-      .populate("userId", "fullName email title")
+      .populate("userId", "fullName email title verificationBadge")
       .sort({ timestamp: -1, createdAt: -1 })
       .skip(skip)
       .limit(limit),
@@ -392,7 +401,7 @@ const getAttendanceLogById = async ({ workspaceId, userId, logId }) => {
   const log = await AttendanceLog.findOne({
     _id: logId,
     workspaceId: workspace._id,
-  }).populate("userId", "fullName email title");
+  }).populate("userId", "fullName email title verificationBadge");
 
   if (!log) {
     throw new ApiError(404, "Attendance log not found");

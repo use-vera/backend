@@ -7,6 +7,7 @@ const eventRoutes = require("./event.routes");
 const notificationRoutes = require("./notification.routes");
 const chatRoutes = require("./chat.routes");
 const fileRoutes = require("./file.routes");
+const subscriptionRoutes = require("./subscription.routes");
 
 const router = express.Router();
 
@@ -18,5 +19,6 @@ router.use("/events", eventRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/chats", chatRoutes);
 router.use("/files", fileRoutes);
+router.use("/subscriptions", subscriptionRoutes);
 
 module.exports = router;

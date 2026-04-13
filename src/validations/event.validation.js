@@ -2,6 +2,7 @@ const { z } = require("zod");
 
 const objectIdRegex = /^[a-fA-F0-9]{24}$/;
 const workspaceRefRegex = /^([a-fA-F0-9]{24}|[a-z0-9]+(?:-[a-z0-9]+)*)$/;
+const colorHexRegex = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 const objectIdSchema = z.string().regex(objectIdRegex, "Invalid id format");
 const workspaceRefSchema = z
@@ -99,6 +100,15 @@ const resalePolicySchema = z.object({
   bidWindowHours: z.coerce.number().int().min(1).max(72).optional().default(12),
 });
 
+const ticketSalesSchema = z.object({
+  startsAt: dateStringSchema.nullish(),
+  presaleEnabled: z.boolean().optional().default(false),
+  presaleStartsAt: dateStringSchema.nullish(),
+  presaleEndsAt: dateStringSchema.nullish(),
+  presaleQuantity: z.coerce.number().int().min(1).max(200000).optional(),
+  presalePriceNaira: z.coerce.number().min(0).optional(),
+});
+
 const ticketCategorySchema = z.object({
   categoryId: z.string().trim().min(1).max(60).optional(),
   name: z.string().trim().min(1).max(60),
@@ -107,9 +117,23 @@ const ticketCategorySchema = z.object({
   priceNaira: z.coerce.number().min(0).optional().default(0),
 });
 
+const eventBrandingSchema = z.object({
+  useOrganizerDefault: z.boolean().optional().default(true),
+  overrideEnabled: z.boolean().optional().default(false),
+  displayName: z.string().trim().max(120).optional(),
+  tagline: z.string().trim().max(180).optional(),
+  logoUrl: z.string().trim().url().max(500).optional(),
+  bannerUrl: z.string().trim().url().max(500).optional(),
+  primaryColor: z.string().trim().regex(colorHexRegex).optional(),
+  accentColor: z.string().trim().regex(colorHexRegex).optional(),
+  headerStyle: z.enum(["soft", "bold"]).optional().default("soft"),
+  ticketStyle: z.enum(["classic", "branded"]).optional().default("classic"),
+});
+
 const createEventSchema = z
   .object({
     workspaceId: workspaceRefSchema.optional(),
+    eventCenterId: objectIdSchema.optional(),
     name: z.string().trim().min(2).max(140),
     description: z.string().trim().max(1200).optional(),
     imageUrl: z.string().trim().max(600).optional(),
@@ -128,9 +152,15 @@ const createEventSchema = z
     endsAt: dateStringSchema,
     timezone: z.string().trim().min(2).max(80).optional().default("Africa/Lagos"),
     isPaid: z.boolean().optional().default(false),
+    platformFeePercent: z.coerce.number().min(0).max(100).optional().default(5),
+    feeMode: z
+      .enum(["absorbed_by_organizer", "passed_to_attendee"])
+      .optional()
+      .default("absorbed_by_organizer"),
     ticketPriceNaira: z.coerce.number().min(0).optional().default(0),
     expectedTickets: z.coerce.number().int().min(1).max(200000),
     ticketCategories: z.array(ticketCategorySchema).max(12).optional().default([]),
+    branding: eventBrandingSchema.optional(),
     recurrence: recurrenceSchema.optional().default({ type: "none", interval: 1, daysOfWeek: [] }),
     pricing: pricingSchema.optional().default({
       dynamicEnabled: false,
@@ -145,6 +175,14 @@ const createEventSchema = z
       allowBids: true,
       maxMarkupPercent: 25,
       bidWindowHours: 12,
+    }),
+    sales: ticketSalesSchema.optional().default({
+      startsAt: null,
+      presaleEnabled: false,
+      presaleStartsAt: null,
+      presaleEndsAt: null,
+      presaleQuantity: undefined,
+      presalePriceNaira: undefined,
     }),
     status: z.enum(["draft", "published", "cancelled"]).optional().default("published"),
   })
@@ -199,10 +237,120 @@ const createEventSchema = z
         });
       }
     }
+
+    const sales = value.sales || {};
+    const salesStartAt = sales.startsAt ? new Date(sales.startsAt) : null;
+    const presaleStartsAt = sales.presaleStartsAt
+      ? new Date(sales.presaleStartsAt)
+      : null;
+    const presaleEndsAt = sales.presaleEndsAt
+      ? new Date(sales.presaleEndsAt)
+      : null;
+    const presaleEnabled = Boolean(sales.presaleEnabled);
+
+    if (salesStartAt && salesStartAt >= endsAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sales", "startsAt"],
+        message: "sales.startsAt must be before event endsAt",
+      });
+    }
+
+    if (!presaleEnabled) {
+      return;
+    }
+
+    if (!value.isPaid) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sales", "presaleEnabled"],
+        message: "Presale is only available for paid events",
+      });
+    }
+
+    if (Array.isArray(value.ticketCategories) && value.ticketCategories.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sales", "presaleEnabled"],
+        message: "Presale currently requires base pricing (no ticket categories)",
+      });
+    }
+
+    if (!presaleStartsAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sales", "presaleStartsAt"],
+        message: "presaleStartsAt is required when presale is enabled",
+      });
+    }
+
+    if (!presaleEndsAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sales", "presaleEndsAt"],
+        message: "presaleEndsAt is required when presale is enabled",
+      });
+    }
+
+    if (!sales.presaleQuantity || Number(sales.presaleQuantity) <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sales", "presaleQuantity"],
+        message: "presaleQuantity is required when presale is enabled",
+      });
+    }
+
+    if (!sales.presalePriceNaira || Number(sales.presalePriceNaira) <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sales", "presalePriceNaira"],
+        message: "presalePriceNaira must be greater than 0",
+      });
+    }
+
+    const hasTicketCategories =
+      Array.isArray(value.ticketCategories) && value.ticketCategories.length > 0;
+    const basePrice = Number(value.ticketPriceNaira || 0);
+    const presalePrice = Number(sales.presalePriceNaira || 0);
+
+    if (value.isPaid && !hasTicketCategories && basePrice > 0 && presalePrice > 0) {
+      if (presalePrice <= basePrice) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["sales", "presalePriceNaira"],
+          message: "presalePriceNaira must be greater than ticketPriceNaira",
+        });
+      }
+
+      if (presalePrice > basePrice * 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["sales", "presalePriceNaira"],
+          message: "presalePriceNaira cannot exceed 2x ticketPriceNaira",
+        });
+      }
+    }
+
+    if (presaleStartsAt && presaleEndsAt && presaleEndsAt <= presaleStartsAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sales", "presaleEndsAt"],
+        message: "presaleEndsAt must be later than presaleStartsAt",
+      });
+    }
+
+    if (salesStartAt && presaleEndsAt && presaleEndsAt > salesStartAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sales", "presaleEndsAt"],
+        message: "presaleEndsAt must be on or before sales.startsAt",
+      });
+    }
   });
 
 const updateEventSchema = z
   .object({
+    eventCenterId: objectIdSchema.optional(),
     name: z.string().trim().min(2).max(140).optional(),
     description: z.string().trim().max(1200).optional(),
     imageUrl: z.string().trim().max(600).optional(),
@@ -214,12 +362,18 @@ const updateEventSchema = z
     endsAt: dateStringSchema.optional(),
     timezone: z.string().trim().min(2).max(80).optional(),
     isPaid: z.boolean().optional(),
+    platformFeePercent: z.coerce.number().min(0).max(100).optional(),
+    feeMode: z
+      .enum(["absorbed_by_organizer", "passed_to_attendee"])
+      .optional(),
     ticketPriceNaira: z.coerce.number().min(0).optional(),
     expectedTickets: z.coerce.number().int().min(1).max(200000).optional(),
     ticketCategories: z.array(ticketCategorySchema).max(12).optional(),
+    branding: eventBrandingSchema.optional(),
     recurrence: recurrenceSchema.optional(),
     pricing: pricingSchema.optional(),
     resale: resalePolicySchema.optional(),
+    sales: ticketSalesSchema.optional(),
     status: z.enum(["draft", "published", "cancelled"]).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
@@ -232,6 +386,7 @@ const listEventsQuerySchema = z.object({
   search: z.string().trim().max(120).optional(),
   sort: z.enum(["dateAsc", "dateDesc", "newest"]).optional().default("dateAsc"),
   filter: z.enum(["upcoming", "this-month", "all"]).optional().default("upcoming"),
+  salePhase: z.enum(["all", "main", "presale"]).optional().default("main"),
   from: dateStringSchema.optional(),
   to: dateStringSchema.optional(),
   ticketType: z.enum(["all", "free", "paid"]).optional().default("all"),
@@ -241,6 +396,14 @@ const listEventsQuerySchema = z.object({
 const listFeaturedEventsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).optional().default(8),
   workspaceId: workspaceRefSchema.optional(),
+  salePhase: z.enum(["all", "main", "presale"]).optional().default("main"),
+});
+
+const searchEventCentersQuerySchema = z.object({
+  query: z.string().trim().min(1).max(160),
+  limit: z.coerce.number().int().min(1).max(20).optional().default(8),
+  latitude: z.coerce.number().min(-90).max(90).optional(),
+  longitude: z.coerce.number().min(-180).max(180).optional(),
 });
 
 const listMyEventsQuerySchema = z.object({
@@ -447,6 +610,7 @@ module.exports = {
   updateEventSchema,
   listEventsQuerySchema,
   listFeaturedEventsQuerySchema,
+  searchEventCentersQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
   organizerIdParamsSchema,

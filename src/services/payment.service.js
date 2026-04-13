@@ -126,7 +126,11 @@ const listPaymentAttempts = async ({
   if (
     normalizedKind &&
     normalizedKind !== "all" &&
-    ["ticket_purchase", "ticket_resale_purchase"].includes(normalizedKind)
+    [
+      "ticket_purchase",
+      "ticket_resale_purchase",
+      "premium_subscription",
+    ].includes(normalizedKind)
   ) {
     query.kind = normalizedKind;
   }
@@ -138,7 +142,7 @@ const listPaymentAttempts = async ({
 
   const totalItems = await PaymentAttempt.countDocuments(query);
   const items = await PaymentAttempt.find(query)
-    .populate("buyerUserId", "fullName email avatarUrl title")
+    .populate("buyerUserId", "fullName email avatarUrl title verificationBadge")
     .populate("eventId", "name imageUrl startsAt endsAt status organizerUserId")
     .sort({ createdAt: -1 })
     .skip((pageNumber - 1) * limitNumber)
@@ -160,7 +164,7 @@ const getPaymentAttemptDetails = async ({ attemptId, actorUserId }) => {
   }
 
   const attempt = await PaymentAttempt.findById(attemptId)
-    .populate("buyerUserId", "fullName email avatarUrl title")
+    .populate("buyerUserId", "fullName email avatarUrl title verificationBadge")
     .populate("eventId", "name imageUrl startsAt endsAt status organizerUserId")
     .populate("ticketId", "ticketCode status totalPriceNaira quantity")
     .populate("resaleSourceTicketId", "ticketCode status totalPriceNaira quantity")

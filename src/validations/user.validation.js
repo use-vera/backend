@@ -66,9 +66,27 @@ const attendanceReportQuerySchema = z
     },
   );
 
+const colorHexRegex = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+const updateOrganizerBrandingSchema = z
+  .object({
+    displayName: z.string().trim().min(2).max(120).optional(),
+    tagline: z.string().trim().max(180).optional(),
+    logoUrl: z.string().trim().url().max(500).optional(),
+    bannerUrl: z.string().trim().url().max(500).optional(),
+    primaryColor: z.string().trim().regex(colorHexRegex).optional(),
+    accentColor: z.string().trim().regex(colorHexRegex).optional(),
+    headerStyle: z.enum(["soft", "bold"]).optional(),
+    ticketStyle: z.enum(["classic", "branded"]).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "At least one branding field is required",
+  });
+
 module.exports = {
   updateProfileSchema,
   updatePasswordSchema,
   updatePreferencesSchema,
   attendanceReportQuerySchema,
+  updateOrganizerBrandingSchema,
 };

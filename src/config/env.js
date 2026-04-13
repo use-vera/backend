@@ -60,6 +60,11 @@ const env = {
   mongoSocketTimeoutMs: toNumber(process.env.MONGO_SOCKET_TIMEOUT_MS, 45000),
   jwtSecret: process.env.JWT_SECRET || "vera_dev_secret_change_me",
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
+  jwtRefreshSecret:
+    process.env.JWT_REFRESH_SECRET ||
+    process.env.JWT_SECRET ||
+    "vera_dev_refresh_secret_change_me",
+  jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "30d",
   bcryptSaltRounds: toNumber(process.env.BCRYPT_SALT_ROUNDS, 12),
   corsOrigins: toList(process.env.CORS_ORIGINS, ["*"]),
   corsAllowCredentials: toBoolean(process.env.CORS_ALLOW_CREDENTIALS, false),
@@ -98,6 +103,15 @@ const env = {
     process.env.TICKET_RESALE_MONITOR_TICK_MS,
     5 * 60 * 1000,
   ),
+  eventCampaignEnabled: toBoolean(process.env.EVENT_CAMPAIGN_ENABLED, true),
+  eventCampaignTickMs: toNumber(
+    process.env.EVENT_CAMPAIGN_TICK_MS,
+    60 * 1000,
+  ),
+  eventMemoryRetentionDays: toNumber(
+    process.env.EVENT_MEMORY_RETENTION_DAYS,
+    14,
+  ),
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || "",
   paystackBaseUrl:
     process.env.PAYSTACK_BASE_URL || "https://api.paystack.co",
@@ -115,6 +129,16 @@ if (
 ) {
   throw new Error(
     "JWT_SECRET must be set to a strong value when NODE_ENV=production",
+  );
+}
+
+if (
+  env.nodeEnv === "production" &&
+  (!process.env.JWT_REFRESH_SECRET ||
+    env.jwtRefreshSecret === "vera_dev_refresh_secret_change_me")
+) {
+  throw new Error(
+    "JWT_REFRESH_SECRET must be set to a strong value when NODE_ENV=production",
   );
 }
 

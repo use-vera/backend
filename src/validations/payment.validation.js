@@ -8,7 +8,9 @@ const listPaymentAttemptsQuerySchema = z.object({
   status: z
     .enum(["all", "initialized", "success", "failed", "abandoned", "expired"])
     .optional(),
-  kind: z.enum(["all", "ticket_purchase", "ticket_resale_purchase"]).optional(),
+  kind: z
+    .enum(["all", "ticket_purchase", "ticket_resale_purchase", "premium_subscription"])
+    .optional(),
   scope: z.enum(["mine", "organizer"]).optional(),
   eventId: z
     .string()

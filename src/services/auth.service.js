@@ -1,25 +1,68 @@
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const ApiError = require("../utils/api-error");
 const env = require("../config/env");
-const { signAccessToken } = require("../utils/jwt");
+const {
+  signAccessToken,
+  signRefreshToken,
+  verifyRefreshToken,
+} = require("../utils/jwt");
 const User = require("../models/user.model");
 const Membership = require("../models/membership.model");
 const {
   createWorkspace,
   listUserWorkspaces,
 } = require("./workspace.service");
+const { syncUserSubscriptionState } = require("./subscription.service");
 
 const sanitizeUser = (userDocument) => {
   if (!userDocument) return null;
 
   const user = userDocument.toObject ? userDocument.toObject() : userDocument;
   delete user.passwordHash;
+  delete user.refreshTokenHash;
+  delete user.refreshTokenIssuedAt;
   delete user.__v;
   return user;
 };
 
+const hashRefreshToken = (refreshToken) =>
+  crypto.createHash("sha256").update(String(refreshToken || "")).digest("hex");
+
+const issueUserTokens = async (user) => {
+  const token = signAccessToken({ userId: String(user._id) });
+  const refreshToken = signRefreshToken({ userId: String(user._id) });
+
+  user.refreshTokenHash = hashRefreshToken(refreshToken);
+  user.refreshTokenIssuedAt = new Date();
+  await user.save();
+
+  return {
+    token,
+    refreshToken,
+  };
+};
+
+const buildAuthResult = async ({ user, bootstrapWorkspace = undefined }) => {
+  await syncUserSubscriptionState({ user });
+  const workspaces = await listUserWorkspaces(user._id);
+  const tokens = await issueUserTokens(user);
+
+  return {
+    user: sanitizeUser(user),
+    token: tokens.token,
+    refreshToken: tokens.refreshToken,
+    workspaces,
+    ...(bootstrapWorkspace !== undefined
+      ? { bootstrapWorkspace: bootstrapWorkspace?.workspace || null }
+      : {}),
+  };
+};
+
 const registerUser = async ({ fullName, email, password, workspaceName }) => {
-  const existingUser = await User.findOne({ email }).select("+passwordHash");
+  const existingUser = await User.findOne({ email }).select(
+    "+passwordHash +refreshTokenHash +refreshTokenIssuedAt",
+  );
 
   if (existingUser) {
     const memberships = await Membership.find({
@@ -42,17 +85,10 @@ const registerUser = async ({ fullName, email, password, workspaceName }) => {
         env.bcryptSaltRounds,
       );
 
-      await existingUser.save();
-
-      const token = signAccessToken({ userId: String(existingUser._id) });
-      const workspaces = await listUserWorkspaces(existingUser._id);
-
-      return {
-        user: sanitizeUser(existingUser),
-        token,
-        workspaces,
+      return buildAuthResult({
+        user: existingUser,
         bootstrapWorkspace: null,
-      };
+      });
     }
 
     throw new ApiError(
@@ -86,19 +122,16 @@ const registerUser = async ({ fullName, email, password, workspaceName }) => {
     });
   }
 
-  const token = signAccessToken({ userId: String(user._id) });
-  const workspaces = await listUserWorkspaces(user._id);
-
-  return {
-    user: sanitizeUser(user),
-    token,
-    workspaces,
-    bootstrapWorkspace: bootstrapWorkspace?.workspace || null,
-  };
+  return buildAuthResult({
+    user,
+    bootstrapWorkspace,
+  });
 };
 
 const loginUser = async ({ email, password }) => {
-  const user = await User.findOne({ email }).select("+passwordHash");
+  const user = await User.findOne({ email }).select(
+    "+passwordHash +refreshTokenHash +refreshTokenIssuedAt",
+  );
 
   if (!user) {
     throw new ApiError(401, "Invalid email or password");
@@ -111,19 +144,79 @@ const loginUser = async ({ email, password }) => {
   }
 
   user.lastLoginAt = new Date();
+
+  return buildAuthResult({ user });
+};
+
+const refreshSession = async ({ refreshToken }) => {
+  const normalizedRefreshToken = String(refreshToken || "").trim();
+
+  if (!normalizedRefreshToken) {
+    throw new ApiError(400, "Refresh token is required");
+  }
+
+  let payload;
+
+  try {
+    payload = verifyRefreshToken(normalizedRefreshToken);
+  } catch (_error) {
+    throw new ApiError(401, "Invalid or expired refresh token");
+  }
+
+  const user = await User.findById(payload.userId).select(
+    "+refreshTokenHash +refreshTokenIssuedAt",
+  );
+
+  if (!user || !user.refreshTokenHash) {
+    throw new ApiError(401, "Session refresh is no longer available");
+  }
+
+  const incomingHash = hashRefreshToken(normalizedRefreshToken);
+
+  if (incomingHash !== user.refreshTokenHash) {
+    throw new ApiError(401, "Session refresh token is invalid");
+  }
+
+  return buildAuthResult({ user });
+};
+
+const logoutUser = async ({ refreshToken }) => {
+  const normalizedRefreshToken = String(refreshToken || "").trim();
+
+  if (!normalizedRefreshToken) {
+    return { revoked: false };
+  }
+
+  let payload;
+
+  try {
+    payload = verifyRefreshToken(normalizedRefreshToken);
+  } catch (_error) {
+    return { revoked: false };
+  }
+
+  const user = await User.findById(payload.userId).select("+refreshTokenHash");
+
+  if (!user || !user.refreshTokenHash) {
+    return { revoked: false };
+  }
+
+  const incomingHash = hashRefreshToken(normalizedRefreshToken);
+
+  if (incomingHash !== user.refreshTokenHash) {
+    return { revoked: false };
+  }
+
+  user.refreshTokenHash = "";
+  user.refreshTokenIssuedAt = null;
   await user.save();
 
-  const token = signAccessToken({ userId: String(user._id) });
-  const workspaces = await listUserWorkspaces(user._id);
-
-  return {
-    user: sanitizeUser(user),
-    token,
-    workspaces,
-  };
+  return { revoked: true };
 };
 
 module.exports = {
   registerUser,
   loginUser,
+  refreshSession,
+  logoutUser,
 };

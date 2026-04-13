@@ -3,6 +3,7 @@ const AttendanceSession = require("../models/attendance-session.model");
 const Workspace = require("../models/workspace.model");
 const mongoose = require("mongoose");
 const env = require("../config/env");
+const { createNotification } = require("./notification.service");
 
 const MONITOR_TICK_MS = Math.max(10 * 1000, Number(env.presenceMonitorTickMs || 60 * 1000));
 const TRANSIENT_LOG_WINDOW_MS = 30 * 1000;
@@ -108,7 +109,7 @@ const resolvePresencePolicy = (workspace) => {
   return {
     enabled: policy.enabled !== false,
     intervalMinutes: Number(policy.intervalMinutes || 60),
-    maxConsecutiveMisses: Number(policy.maxConsecutiveMisses || 2),
+    maxConsecutiveMisses: Math.max(2, Number(policy.maxConsecutiveMisses || 2)),
   };
 };
 
@@ -124,6 +125,7 @@ const evaluateSessionSignal = ({ session, workspace, intervalMinutes, now }) => 
       withinRange: false,
       reason: "No recent location signal",
       distanceMeters: null,
+      kind: "missing-signal",
     };
   }
 
@@ -134,6 +136,7 @@ const evaluateSessionSignal = ({ session, workspace, intervalMinutes, now }) => 
       withinRange: false,
       reason: "Location heartbeat is stale",
       distanceMeters: null,
+      kind: "stale-signal",
     };
   }
 
@@ -150,6 +153,7 @@ const evaluateSessionSignal = ({ session, workspace, intervalMinutes, now }) => 
       withinRange: false,
       reason: "Missing geofence signal coordinates",
       distanceMeters: null,
+      kind: "missing-coordinates",
     };
   }
 
@@ -171,7 +175,77 @@ const evaluateSessionSignal = ({ session, workspace, intervalMinutes, now }) => 
     withinRange,
     reason: withinRange ? "Within verification zone" : "Outside verification zone",
     distanceMeters,
+    kind: withinRange ? "within-zone" : "outside-zone",
   };
+};
+
+const shouldCountSignalAsMiss = ({ session, signal }) => {
+  if (signal.kind === "outside-zone") {
+    return true;
+  }
+
+  // If we only lost heartbeat while the last known signal was still in range,
+  // keep the user checked in and wait for the next strong signal.
+  if (
+    signal.kind === "stale-signal" ||
+    signal.kind === "missing-signal" ||
+    signal.kind === "missing-coordinates"
+  ) {
+    return session.lastSeenWithinGeofence === false;
+  }
+
+  return false;
+};
+
+const notifyImpendingAutoCheckout = async ({
+  session,
+  workspace,
+  signal,
+  policy,
+  now,
+}) => {
+  const nextCheckAt = new Date(
+    now.getTime() + policy.intervalMinutes * 60 * 1000,
+  );
+
+  try {
+    await createNotification({
+      userId: session.userId,
+      type: "attendance.auto_checkout_warning",
+      title: "Return to your check-in zone",
+      message: `You're outside ${workspace.name}. Return before the next verification to avoid automatic check-out.`,
+      push: true,
+      data: {
+        target: "check-in",
+        workspaceId: String(workspace._id),
+        reason: signal.reason,
+        intervalMinutes: policy.intervalMinutes,
+        nextCheckAt: nextCheckAt.toISOString(),
+      },
+    });
+  } catch (_error) {
+    // Do not fail the monitor tick if notification write/push fails.
+  }
+};
+
+const notifyAutoCheckoutCompleted = async ({ session, workspace, signal, now }) => {
+  try {
+    await createNotification({
+      userId: session.userId,
+      type: "attendance.auto_checked_out",
+      title: "You were checked out automatically",
+      message: `${workspace.name} ended your active check-in because you were out of range.`,
+      push: true,
+      data: {
+        target: "check-in",
+        workspaceId: String(workspace._id),
+        reason: signal.reason,
+        checkedOutAt: now.toISOString(),
+      },
+    });
+  } catch (_error) {
+    // Do not fail the monitor tick if notification write/push fails.
+  }
 };
 
 const shouldEvaluateSession = ({ session, intervalMinutes, now }) => {
@@ -224,6 +298,8 @@ const createAutoCheckoutLog = async ({ session, workspace, signal, now }) => {
   session.status = "checked-out";
   session.checkedOutAt = now;
   session.autoCheckoutReason = `${signal.reason} for ${session.consecutiveMisses} checks`;
+  session.lastAutoCheckoutWarningAt = null;
+  session.lastAutoCheckoutWarningMissCount = 0;
 };
 
 const runPresenceMonitorTick = async () => {
@@ -281,14 +357,51 @@ const runPresenceMonitorTick = async () => {
       if (signal.withinRange) {
         session.consecutiveMisses = 0;
         session.autoCheckoutReason = "";
+        session.lastAutoCheckoutWarningAt = null;
+        session.lastAutoCheckoutWarningMissCount = 0;
+        await session.save();
+        continue;
+      }
+
+      const shouldCountAsMiss = shouldCountSignalAsMiss({ session, signal });
+
+      if (!shouldCountAsMiss) {
+        session.consecutiveMisses = 0;
+        session.autoCheckoutReason = signal.reason;
+        session.lastAutoCheckoutWarningAt = null;
+        session.lastAutoCheckoutWarningMissCount = 0;
         await session.save();
         continue;
       }
 
       session.consecutiveMisses = Number(session.consecutiveMisses || 0) + 1;
+      const warningThreshold = Math.max(1, policy.maxConsecutiveMisses - 1);
+
+      if (
+        session.consecutiveMisses >= warningThreshold &&
+        session.consecutiveMisses < policy.maxConsecutiveMisses &&
+        Number(session.lastAutoCheckoutWarningMissCount || 0) <
+          session.consecutiveMisses
+      ) {
+        await notifyImpendingAutoCheckout({
+          session,
+          workspace,
+          signal,
+          policy,
+          now,
+        });
+        session.lastAutoCheckoutWarningAt = now;
+        session.lastAutoCheckoutWarningMissCount = session.consecutiveMisses;
+      }
 
       if (session.consecutiveMisses >= policy.maxConsecutiveMisses) {
         await createAutoCheckoutLog({
+          session,
+          workspace,
+          signal,
+          now,
+        });
+        await notifyAutoCheckoutCompleted({
           session,
           workspace,
           signal,

@@ -11,6 +11,9 @@ const {
 const {
   startTicketResaleMonitor,
 } = require("./services/ticket-resale-monitor.service");
+const {
+  startEventCampaignMonitor,
+} = require("./services/event-premium.service");
 const { initializeSocketServer } = require("./realtime/socket");
 
 const startServer = async () => {
@@ -28,6 +31,7 @@ const startServer = async () => {
       startChatReminderMonitor();
       startTicketTodoReminderMonitor();
       startTicketResaleMonitor();
+      startEventCampaignMonitor();
     });
   } catch (error) {
     // eslint-disable-next-line no-console

@@ -14,7 +14,17 @@ const loginSchema = z.object({
   password: z.string().min(8).max(128),
 });
 
+const refreshSchema = z.object({
+  refreshToken: z.string().trim().min(20).max(4000),
+});
+
+const logoutSchema = z.object({
+  refreshToken: z.string().trim().min(20).max(4000).optional(),
+});
+
 module.exports = {
   registerSchema,
   loginSchema,
+  refreshSchema,
+  logoutSchema,
 };

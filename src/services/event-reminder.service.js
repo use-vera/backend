@@ -52,6 +52,8 @@ const formatReminderWindow = (offsetMinutes) => {
 const isDuplicateKeyError = (error) =>
   Boolean(error && typeof error === "object" && Number(error.code) === 11000);
 
+const toIdString = (value) => String(value || "").trim();
+
 const runEventReminderTick = async () => {
   if (tickRunning || !isDbConnected()) {
     return;
@@ -105,7 +107,7 @@ const runEventReminderTick = async () => {
       ]),
     );
 
-    const dueWindowMinutes = Math.max(1, TICK_MS / 60000) + 1;
+    const recipientMap = new Map();
 
     for (const ticket of tickets) {
       const event = ticket.eventId;
@@ -114,6 +116,43 @@ const runEventReminderTick = async () => {
         continue;
       }
 
+      const eventId = toIdString(event._id);
+      const userId = toIdString(ticket.buyerUserId);
+
+      if (!objectIdRegex.test(eventId) || !objectIdRegex.test(userId)) {
+        continue;
+      }
+
+      const recipientKey = `${eventId}:${userId}`;
+      const existingRecipient = recipientMap.get(recipientKey);
+
+      if (!existingRecipient) {
+        recipientMap.set(recipientKey, {
+          event,
+          ticket,
+        });
+        continue;
+      }
+
+      const existingCreatedAt = new Date(
+        existingRecipient.ticket?.createdAt || 0,
+      ).getTime();
+      const currentCreatedAt = new Date(ticket?.createdAt || 0).getTime();
+
+      if (
+        Number.isFinite(currentCreatedAt) &&
+        (!Number.isFinite(existingCreatedAt) || currentCreatedAt < existingCreatedAt)
+      ) {
+        recipientMap.set(recipientKey, {
+          event,
+          ticket,
+        });
+      }
+    }
+
+    const dueWindowMinutes = Math.max(1, TICK_MS / 60000) + 1;
+
+    for (const { event, ticket } of recipientMap.values()) {
       const occurrence = resolveOccurrenceWindow(event, now);
 
       if (!occurrence) {
@@ -127,7 +166,7 @@ const runEventReminderTick = async () => {
         continue;
       }
 
-      const key = `${String(event._id)}:${String(ticket.buyerUserId)}`;
+      const key = `${toIdString(event._id)}:${toIdString(ticket.buyerUserId)}`;
       const preference = preferenceMap.get(key);
       const enabled = preference ? preference.enabled !== false : true;
 

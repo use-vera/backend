@@ -17,7 +17,11 @@ const paymentAttemptSchema = new Schema(
     },
     kind: {
       type: String,
-      enum: ["ticket_purchase", "ticket_resale_purchase"],
+      enum: [
+        "ticket_purchase",
+        "ticket_resale_purchase",
+        "premium_subscription",
+      ],
       required: true,
       index: true,
     },
@@ -36,7 +40,8 @@ const paymentAttemptSchema = new Schema(
     eventId: {
       type: Schema.Types.ObjectId,
       ref: "Event",
-      required: true,
+      required: false,
+      default: null,
       index: true,
     },
     ticketId: {

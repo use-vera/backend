@@ -153,7 +153,7 @@ const hydrateConversationUsers = async (conversation) => {
 
   const users = referencedUserIds.length
     ? await User.find({ _id: { $in: referencedUserIds } })
-        .select("_id fullName email avatarUrl title")
+        .select("_id fullName email avatarUrl title verificationBadge")
         .lean()
     : [];
   const userMap = new Map(users.map((user) => [String(user._id), user]));
@@ -347,14 +347,14 @@ const DIRECT_DELETED_TEXT = "This message was deleted";
 
 const applyDirectMessagePopulate = (query) =>
   query
-    .populate("senderUserId", "fullName email avatarUrl title")
+    .populate("senderUserId", "fullName email avatarUrl title verificationBadge")
     .populate({
       path: "replyToMessageId",
       select:
         "_id message messageType senderUserId isDeleted deletedAt createdAt",
       populate: {
         path: "senderUserId",
-        select: "fullName email avatarUrl title",
+        select: "fullName email avatarUrl title verificationBadge",
       },
     })
     .populate({
@@ -363,7 +363,7 @@ const applyDirectMessagePopulate = (query) =>
         "_id message messageType senderUserId isDeleted deletedAt createdAt",
       populate: {
         path: "senderUserId",
-        select: "fullName email avatarUrl title",
+        select: "fullName email avatarUrl title verificationBadge",
       },
     });
 
@@ -511,7 +511,7 @@ const resolveForwardedMessage = async ({
     _id: forwardedId,
     conversationId,
   })
-    .populate("senderUserId", "fullName email avatarUrl title")
+    .populate("senderUserId", "fullName email avatarUrl title verificationBadge")
     .select("_id message messageType senderUserId isDeleted deletedAt");
 
   if (!message) {
@@ -544,7 +544,7 @@ const resolveReplyMessage = async ({ conversationId, replyToMessageId }) => {
     _id: replyId,
     conversationId,
   })
-    .populate("senderUserId", "fullName email avatarUrl title")
+    .populate("senderUserId", "fullName email avatarUrl title verificationBadge")
     .select("_id message messageType senderUserId isDeleted deletedAt");
 
   if (!message) {
@@ -1000,7 +1000,7 @@ const listChatThreads = async ({
 
   const directUsers = referencedUserIds.size
     ? await User.find({ _id: { $in: [...referencedUserIds] } })
-        .select("_id fullName email avatarUrl title")
+        .select("_id fullName email avatarUrl title verificationBadge")
         .lean()
     : [];
   const directUserMap = new Map(directUsers.map((user) => [String(user._id), user]));
@@ -1050,7 +1050,7 @@ const listChatThreads = async ({
   const [events, eventMessageRows] = await Promise.all([
     eventObjectIds.length
       ? Event.find(eventQuery)
-          .populate("organizerUserId", "fullName email avatarUrl title")
+          .populate("organizerUserId", "fullName email avatarUrl title verificationBadge")
           .select("name imageUrl startsAt address organizerUserId")
           .sort({ startsAt: 1, createdAt: -1 })
           .limit(250)
@@ -1081,7 +1081,7 @@ const listChatThreads = async ({
   const eventSenderIds = [...new Set(eventMessageRows.map((row) => String(row.userId)))];
   const eventSenders = eventSenderIds.length
     ? await User.find({ _id: { $in: eventSenderIds } })
-        .select("_id fullName email avatarUrl title")
+        .select("_id fullName email avatarUrl title verificationBadge")
         .lean()
     : [];
   const senderMap = new Map(eventSenders.map((user) => [String(user._id), user]));
@@ -1207,7 +1207,7 @@ const discoverChatUsers = async ({
 
   const [items, totalItems] = await Promise.all([
     User.find(query)
-      .select("fullName email avatarUrl title")
+      .select("fullName email avatarUrl title verificationBadge")
       .sort({ updatedAt: -1, createdAt: -1 })
       .skip(skip)
       .limit(limitNumber)

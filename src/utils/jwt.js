@@ -6,7 +6,17 @@ const signAccessToken = (payload) =>
 
 const verifyAccessToken = (token) => jwt.verify(token, env.jwtSecret);
 
+const signRefreshToken = (payload) =>
+  jwt.sign(payload, env.jwtRefreshSecret, {
+    expiresIn: env.jwtRefreshExpiresIn,
+  });
+
+const verifyRefreshToken = (token) =>
+  jwt.verify(token, env.jwtRefreshSecret);
+
 module.exports = {
   signAccessToken,
   verifyAccessToken,
+  signRefreshToken,
+  verifyRefreshToken,
 };

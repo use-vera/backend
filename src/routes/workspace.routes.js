@@ -29,6 +29,12 @@ const {
   recurringEventAttendanceQuerySchema,
 } = require("../validations/recurring-event.validation");
 const {
+  updateWorkspaceBrandingSchema,
+  listWorkspaceCampaignsQuerySchema,
+  sendWorkspaceCampaignSchema,
+  createWorkspaceExportSchema,
+} = require("../validations/workspace-premium.validation");
+const {
   createWorkspaceController,
   listWorkspacesController,
   getWorkspaceController,
@@ -59,6 +65,13 @@ const {
   updateRecurringEventController,
   listRecurringEventAttendanceController,
 } = require("../controllers/recurring-event.controller");
+const {
+  getWorkspaceBrandingController,
+  updateWorkspaceBrandingController,
+  listWorkspaceCampaignsController,
+  sendWorkspaceCampaignController,
+  createWorkspaceDataExportController,
+} = require("../controllers/workspace-premium.controller");
 
 const router = express.Router();
 
@@ -113,6 +126,36 @@ router.get(
   "/:workspaceId/invites",
   validateParams(workspaceParamsSchema),
   listWorkspaceInvitesController,
+);
+
+router.get(
+  "/:workspaceId/premium/branding",
+  validateParams(workspaceParamsSchema),
+  getWorkspaceBrandingController,
+);
+router.patch(
+  "/:workspaceId/premium/branding",
+  validateParams(workspaceParamsSchema),
+  validateBody(updateWorkspaceBrandingSchema),
+  updateWorkspaceBrandingController,
+);
+router.get(
+  "/:workspaceId/premium/campaigns",
+  validateParams(workspaceParamsSchema),
+  validateQuery(listWorkspaceCampaignsQuerySchema),
+  listWorkspaceCampaignsController,
+);
+router.post(
+  "/:workspaceId/premium/campaigns/send",
+  validateParams(workspaceParamsSchema),
+  validateBody(sendWorkspaceCampaignSchema),
+  sendWorkspaceCampaignController,
+);
+router.post(
+  "/:workspaceId/premium/exports",
+  validateParams(workspaceParamsSchema),
+  validateBody(createWorkspaceExportSchema),
+  createWorkspaceDataExportController,
 );
 
 router.post(

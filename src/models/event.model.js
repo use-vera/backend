@@ -106,6 +106,38 @@ const resaleSchema = new Schema(
   { _id: false },
 );
 
+const salesSchema = new Schema(
+  {
+    startsAt: {
+      type: Date,
+      default: null,
+    },
+    presaleEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    presaleStartsAt: {
+      type: Date,
+      default: null,
+    },
+    presaleEndsAt: {
+      type: Date,
+      default: null,
+    },
+    presaleQuantity: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+    presalePriceNaira: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+  },
+  { _id: false },
+);
+
 const ticketCategorySchema = new Schema(
   {
     name: {
@@ -138,6 +170,68 @@ const ticketCategorySchema = new Schema(
   },
 );
 
+const brandingSchema = new Schema(
+  {
+    useOrganizerDefault: {
+      type: Boolean,
+      default: true,
+    },
+    overrideEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    displayName: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+      default: "",
+    },
+    tagline: {
+      type: String,
+      trim: true,
+      maxlength: 180,
+      default: "",
+    },
+    logoUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    bannerUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    primaryColor: {
+      type: String,
+      trim: true,
+      maxlength: 24,
+      default: "",
+    },
+    accentColor: {
+      type: String,
+      trim: true,
+      maxlength: 24,
+      default: "",
+    },
+    headerStyle: {
+      type: String,
+      enum: ["soft", "bold"],
+      default: "soft",
+    },
+    ticketStyle: {
+      type: String,
+      enum: ["classic", "branded"],
+      default: "classic",
+    },
+    updatedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false },
+);
+
 const eventSchema = new Schema(
   {
     organizerUserId: {
@@ -149,6 +243,12 @@ const eventSchema = new Schema(
     workspaceId: {
       type: Schema.Types.ObjectId,
       ref: "Workspace",
+      default: null,
+      index: true,
+    },
+    eventCenterId: {
+      type: Schema.Types.ObjectId,
+      ref: "EventCenter",
       default: null,
       index: true,
     },
@@ -213,6 +313,17 @@ const eventSchema = new Schema(
       default: false,
       index: true,
     },
+    platformFeePercent: {
+      type: Number,
+      min: 0,
+      max: 100,
+      default: 5,
+    },
+    feeMode: {
+      type: String,
+      enum: ["absorbed_by_organizer", "passed_to_attendee"],
+      default: "absorbed_by_organizer",
+    },
     ticketPriceNaira: {
       type: Number,
       min: 0,
@@ -255,6 +366,33 @@ const eventSchema = new Schema(
         allowBids: true,
         maxMarkupPercent: 25,
         bidWindowHours: 12,
+      }),
+    },
+    sales: {
+      type: salesSchema,
+      default: () => ({
+        startsAt: null,
+        presaleEnabled: false,
+        presaleStartsAt: null,
+        presaleEndsAt: null,
+        presaleQuantity: 0,
+        presalePriceNaira: 0,
+      }),
+    },
+    branding: {
+      type: brandingSchema,
+      default: () => ({
+        useOrganizerDefault: true,
+        overrideEnabled: false,
+        displayName: "",
+        tagline: "",
+        logoUrl: "",
+        bannerUrl: "",
+        primaryColor: "",
+        accentColor: "",
+        headerStyle: "soft",
+        ticketStyle: "classic",
+        updatedAt: null,
       }),
     },
     status: {

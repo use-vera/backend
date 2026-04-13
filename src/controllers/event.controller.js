@@ -3,6 +3,7 @@ const {
   createEvent,
   listEvents,
   listFeaturedEvents,
+  searchEventCenters,
   listMyEvents,
   getEventById,
   getOrganizerProfileById,
@@ -12,6 +13,7 @@ const {
   deleteEvent,
   initializeTicketPurchase,
   verifyTicketPayment,
+  cancelTicketPayment,
   checkInTicket,
   listMyTickets,
   listOrganizerTicketSales,
@@ -67,6 +69,7 @@ const listEventsController = asyncHandler(async (req, res) => {
     search: req.query.search,
     sort: req.query.sort,
     filter: req.query.filter,
+    salePhase: req.query.salePhase,
     from: req.query.from,
     to: req.query.to,
     ticketType: req.query.ticketType,
@@ -101,11 +104,27 @@ const listFeaturedEventsController = asyncHandler(async (req, res) => {
     actorUserId: req.auth.userId,
     limit: req.query.limit,
     workspaceId: req.query.workspaceId,
+    salePhase: req.query.salePhase,
   });
 
   res.status(200).json({
     success: true,
     message: "Featured events fetched",
+    data: result,
+  });
+});
+
+const searchEventCentersController = asyncHandler(async (req, res) => {
+  const result = await searchEventCenters({
+    query: req.query.query,
+    limit: req.query.limit,
+    latitude: req.query.latitude,
+    longitude: req.query.longitude,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Event centers fetched",
     data: result,
   });
 });
@@ -409,6 +428,22 @@ const verifyTicketPaymentController = asyncHandler(async (req, res) => {
   });
 });
 
+const cancelTicketPaymentController = asyncHandler(async (req, res) => {
+  const result = await cancelTicketPayment({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    reference: req.body.reference,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: result.cancelled
+      ? "Pending checkout cancelled"
+      : "No active pending checkout found",
+    data: result,
+  });
+});
+
 const checkInTicketController = asyncHandler(async (req, res) => {
   const result = await checkInTicket({
     actorUserId: req.auth.userId,
@@ -687,6 +722,7 @@ module.exports = {
   listEventsController,
   listEventFeedController,
   listFeaturedEventsController,
+  searchEventCentersController,
   listMyEventsController,
   getEventController,
   getOrganizerProfileController,
@@ -707,6 +743,7 @@ module.exports = {
   deleteEventController,
   initializeTicketPurchaseController,
   verifyTicketPaymentController,
+  cancelTicketPaymentController,
   checkInTicketController,
   listMyTicketsController,
   listOrganizerTicketSalesController,

@@ -308,7 +308,7 @@ const listRecurringEventAttendance = async ({
   }
 
   return RecurringEventAttendance.find(query)
-    .populate("userId", "fullName email title")
+    .populate("userId", "fullName email title verificationBadge")
     .sort({ updatedAt: -1 })
     .limit(limit || 80);
 };

@@ -52,6 +52,66 @@ const presencePolicySchema = new Schema(
   { _id: false },
 );
 
+const brandingSchema = new Schema(
+  {
+    displayName: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+      default: "",
+    },
+    tagline: {
+      type: String,
+      trim: true,
+      maxlength: 180,
+      default: "",
+    },
+    logoUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    bannerUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    primaryColor: {
+      type: String,
+      trim: true,
+      maxlength: 24,
+      default: "#5BDFB3",
+    },
+    accentColor: {
+      type: String,
+      trim: true,
+      maxlength: 24,
+      default: "#7C5CFF",
+    },
+    websiteUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    supportEmail: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: "",
+    },
+    updatedByUserId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    updatedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false },
+);
+
 const workspaceSchema = new Schema(
   {
     name: {
@@ -97,6 +157,21 @@ const workspaceSchema = new Schema(
         enabled: true,
         intervalMinutes: 60,
         maxConsecutiveMisses: 2,
+      }),
+    },
+    branding: {
+      type: brandingSchema,
+      default: () => ({
+        displayName: "",
+        tagline: "",
+        logoUrl: "",
+        bannerUrl: "",
+        primaryColor: "#5BDFB3",
+        accentColor: "#7C5CFF",
+        websiteUrl: "",
+        supportEmail: "",
+        updatedByUserId: null,
+        updatedAt: null,
       }),
     },
   },

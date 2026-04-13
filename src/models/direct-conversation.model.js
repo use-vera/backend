@@ -99,9 +99,8 @@ function autoNormalizeParticipants(schema) {
     return String(value).trim();
   };
 
-  schema.pre("validate", function normalize(next) {
+  schema.pre("validate", function normalize() {
     if (!Array.isArray(this.participants)) {
-      next();
       return;
     }
 
@@ -115,8 +114,6 @@ function autoNormalizeParticipants(schema) {
     if (!this.directKey && this.participants.length === 2) {
       this.directKey = `${this.participants[0]}:${this.participants[1]}`;
     }
-
-    next();
   });
 }
 

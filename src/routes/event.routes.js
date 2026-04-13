@@ -10,6 +10,7 @@ const {
   updateEventSchema,
   listEventsQuerySchema,
   listFeaturedEventsQuerySchema,
+  searchEventCentersQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
   organizerIdParamsSchema,
@@ -43,9 +44,20 @@ const {
   updateTicketTodoSchema,
 } = require("../validations/event.validation");
 const {
+  eventCampaignParamsSchema,
+  eventExportParamsSchema,
+  listEventCampaignsQuerySchema,
+  createEventCampaignSchema,
+  updateEventCampaignScheduleSchema,
+  updateEventBrandingSchema,
+  listEventExportsQuerySchema,
+  createEventExportSchema,
+} = require("../validations/event-premium.validation");
+const {
   createEventController,
   listEventsController,
   listFeaturedEventsController,
+  searchEventCentersController,
   listMyEventsController,
   getEventController,
   getOrganizerProfileController,
@@ -55,6 +67,7 @@ const {
   deleteEventController,
   initializeTicketPurchaseController,
   verifyTicketPaymentController,
+  cancelTicketPaymentController,
   checkInTicketController,
   listMyTicketsController,
   listOrganizerTicketSalesController,
@@ -87,6 +100,19 @@ const {
   listEventPostCommentsController,
   createEventPostCommentController,
 } = require("../controllers/event.controller");
+const {
+  getEventBrandingController,
+  updateEventBrandingController,
+  listEventCampaignsController,
+  createEventCampaignController,
+  getEventCampaignController,
+  updateEventCampaignController,
+  listEventExportsController,
+  createEventExportController,
+  getEventExportController,
+  getEventExportPreviewController,
+  downloadEventExportController,
+} = require("../controllers/event-premium.controller");
 
 const router = express.Router();
 
@@ -98,6 +124,11 @@ router.get(
   "/featured",
   validateQuery(listFeaturedEventsQuerySchema),
   listFeaturedEventsController,
+);
+router.get(
+  "/centers/search",
+  validateQuery(searchEventCentersQuerySchema),
+  searchEventCentersController,
 );
 router.get(
   "/organizers/:organizerId",
@@ -132,6 +163,12 @@ router.post(
   validateParams(ticketIdParamsSchema),
   validateBody(verifyTicketPaymentSchema),
   verifyTicketPaymentController,
+);
+router.post(
+  "/tickets/:ticketId/cancel-payment",
+  validateParams(ticketIdParamsSchema),
+  validateBody(verifyTicketPaymentSchema),
+  cancelTicketPaymentController,
 );
 router.post(
   "/tickets/:ticketId/resale",
@@ -234,6 +271,67 @@ router.post(
   validateParams(eventIdParamsSchema),
   validateBody(eventReminderSchema),
   updateEventReminderController,
+);
+router.get(
+  "/:eventId/branding",
+  validateParams(eventIdParamsSchema),
+  getEventBrandingController,
+);
+router.patch(
+  "/:eventId/branding",
+  validateParams(eventIdParamsSchema),
+  validateBody(updateEventBrandingSchema),
+  updateEventBrandingController,
+);
+router.get(
+  "/:eventId/campaigns",
+  validateParams(eventIdParamsSchema),
+  validateQuery(listEventCampaignsQuerySchema),
+  listEventCampaignsController,
+);
+router.post(
+  "/:eventId/campaigns",
+  validateParams(eventIdParamsSchema),
+  validateBody(createEventCampaignSchema),
+  createEventCampaignController,
+);
+router.get(
+  "/:eventId/campaigns/:campaignId",
+  validateParams(eventCampaignParamsSchema),
+  getEventCampaignController,
+);
+router.patch(
+  "/:eventId/campaigns/:campaignId",
+  validateParams(eventCampaignParamsSchema),
+  validateBody(updateEventCampaignScheduleSchema),
+  updateEventCampaignController,
+);
+router.get(
+  "/:eventId/exports",
+  validateParams(eventIdParamsSchema),
+  validateQuery(listEventExportsQuerySchema),
+  listEventExportsController,
+);
+router.post(
+  "/:eventId/exports",
+  validateParams(eventIdParamsSchema),
+  validateBody(createEventExportSchema),
+  createEventExportController,
+);
+router.get(
+  "/:eventId/exports/:exportId",
+  validateParams(eventExportParamsSchema),
+  getEventExportController,
+);
+router.get(
+  "/:eventId/exports/:exportId/preview",
+  validateParams(eventExportParamsSchema),
+  getEventExportPreviewController,
+);
+router.get(
+  "/:eventId/exports/:exportId/download",
+  validateParams(eventExportParamsSchema),
+  downloadEventExportController,
 );
 router.get(
   "/:eventId/chat",

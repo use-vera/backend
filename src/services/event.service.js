@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
 const EventRating = require("../models/event-rating.model");
+const EventCenter = require("../models/event-center.model");
 const EventChatMessage = require("../models/event-chat-message.model");
 const EventPost = require("../models/event-post.model");
 const EventPostLike = require("../models/event-post-like.model");
@@ -21,6 +22,23 @@ const {
   initializePaystackTransaction,
   verifyPaystackTransaction,
 } = require("./paystack.service");
+const {
+  resolveOrUpsertEventCenter,
+  searchEventCenters,
+  recomputeOrganizerVerification,
+  recomputeEventCenterVerification,
+  recomputeVerificationForEvent,
+  getOrganizerVerificationMap: getOrganizerVerificationMapFromVerification,
+} = require("./verification.service");
+const {
+  DEFAULT_PLATFORM_FEE_PERCENT,
+  normalizeEventFeeConfig,
+  computePrimaryTicketPricing,
+} = require("./pricing.service");
+const {
+  finalizePremiumSubscriptionPaymentAttempt,
+} = require("./subscription.service");
+const { resolveBranding } = require("./event-premium.service");
 const env = require("../config/env");
 
 const roleWeight = {
@@ -32,6 +50,11 @@ const roleWeight = {
 const objectIdRegex = /^[a-fA-F0-9]{24}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_REMINDER_OFFSETS = [1440, 180, 30];
+const EVENT_MEMORY_RETENTION_DAYS = Math.max(
+  1,
+  Number(env.eventMemoryRetentionDays || 14),
+);
+const EVENT_MEMORY_RETENTION_MS = EVENT_MEMORY_RETENTION_DAYS * DAY_MS;
 
 const clamp = (value, min, max) =>
   Math.max(min, Math.min(max, Number(value)));
@@ -517,11 +540,15 @@ const getEventTicketStatsMap = async (eventIds) => {
     return new Map();
   }
 
+  const pendingCutoff = new Date(Date.now() - 30 * 60 * 1000);
   const rows = await EventTicket.aggregate([
     {
       $match: {
         eventId: { $in: eventIds },
-        status: { $in: ["pending", "paid", "used"] },
+        $or: [
+          { status: { $in: ["paid", "used"] } },
+          { status: "pending", createdAt: { $gte: pendingCutoff } },
+        ],
       },
     },
     {
@@ -768,6 +795,25 @@ const getDynamicTicketPricing = ({ event, occurrence, soldTickets, pendingTicket
   };
 };
 
+const mapEventCenterForResponse = (event) => {
+  const center = event?.eventCenterId;
+
+  if (!center || typeof center === "string") {
+    return null;
+  }
+
+  return {
+    _id: String(center._id),
+    name: center.name,
+    latitude: Number(center.latitude),
+    longitude: Number(center.longitude),
+    verified: Boolean(center.verified),
+    verifiedAt: center.verifiedAt || null,
+    successfulEventsCount: Number(center.successfulEventsCount || 0),
+    usageCount: Number(center.usageCount || 0),
+  };
+};
+
 const mapEventForResponse = ({
   event,
   occurrence,
@@ -778,6 +824,8 @@ const mapEventForResponse = ({
   coworkerTicketCount = 0,
   now = new Date(),
 }) => {
+  const salePhase = resolveEventSalePhase(event, now);
+  const salesPolicy = getEventSalesSnapshot(event);
   const soldTickets = Number(stats?.soldTickets || 0);
   const pendingTickets = Number(stats?.pendingTickets || 0);
   const reserved = soldTickets + pendingTickets;
@@ -793,11 +841,32 @@ const mapEventForResponse = ({
 
   return {
     ...event.toJSON(),
+    eventCenter: mapEventCenterForResponse(event),
+    resolvedBranding: resolveBranding({
+      organizerBranding:
+        event?.organizerUserId && typeof event.organizerUserId === "object"
+          ? event.organizerUserId.organizerBranding
+          : null,
+      eventBranding: event?.branding || {},
+    }),
     nextOccurrenceAt: occurrence.startsAt.toISOString(),
     nextOccurrenceEndsAt: occurrence.endsAt.toISOString(),
     soldTickets,
     pendingTickets,
     remainingTickets: Math.max(0, Number(event.expectedTickets || 0) - reserved),
+    salePhase,
+    sales: {
+      startsAt: salesPolicy.startsAt ? new Date(salesPolicy.startsAt).toISOString() : null,
+      presaleEnabled: Boolean(salesPolicy.presaleEnabled),
+      presaleStartsAt: salesPolicy.presaleStartsAt
+        ? new Date(salesPolicy.presaleStartsAt).toISOString()
+        : null,
+      presaleEndsAt: salesPolicy.presaleEndsAt
+        ? new Date(salesPolicy.presaleEndsAt).toISOString()
+        : null,
+      presaleQuantity: Number(salesPolicy.presaleQuantity || 0),
+      presalePriceNaira: Number(salesPolicy.presalePriceNaira || 0),
+    },
     averageRating,
     ratingsCount,
     currentTicketPriceNaira: dynamicPricing.currentTicketPriceNaira,
@@ -809,18 +878,89 @@ const mapEventForResponse = ({
         ? Number(ratings.myRating)
         : null,
     myTicket: myTicket
-      ? {
-          _id: String(myTicket._id),
-          status: myTicket.status,
-          ticketCode: myTicket.ticketCode,
-          paidAt: myTicket.paidAt,
-          paymentReference: myTicket.paymentReference,
-        }
+      ? (() => {
+          const sanitizedMyTicket = withClientTicketIdentity(myTicket);
+          return {
+            _id: String(sanitizedMyTicket._id),
+            status: sanitizedMyTicket.status,
+            ticketCode: sanitizedMyTicket.ticketCode || "",
+            paidAt: sanitizedMyTicket.paidAt,
+            paymentReference: sanitizedMyTicket.paymentReference,
+          };
+        })()
       : null,
   };
 };
 
 const toIdString = (value) => String(value?._id || value || "");
+
+const refreshEventCentersForEvents = async (events) => {
+  if (!Array.isArray(events) || events.length === 0) {
+    return;
+  }
+
+  const centerIds = [...new Set(
+    events
+      .map((event) => toIdString(event?.eventCenterId))
+      .filter((id) => objectIdRegex.test(id)),
+  )];
+
+  if (!centerIds.length) {
+    return;
+  }
+
+  await Promise.all(
+    centerIds.map((centerId) =>
+      recomputeEventCenterVerification({ eventCenterId: centerId }),
+    ),
+  );
+
+  const centers = await EventCenter.find({
+    _id: { $in: toObjectIds(centerIds) },
+  }).select("name latitude longitude verified successfulEventsCount usageCount verifiedAt");
+  const centerMap = new Map(centers.map((center) => [String(center._id), center]));
+
+  for (const event of events) {
+    const centerId = toIdString(event?.eventCenterId);
+
+    if (centerId && centerMap.has(centerId)) {
+      event.eventCenterId = centerMap.get(centerId);
+    }
+  }
+};
+
+const shouldHideTicketIdentityForClient = (ticket) => {
+  if (!ticket || typeof ticket !== "object") {
+    return false;
+  }
+
+  const status = String(ticket.status || "").trim().toLowerCase();
+  const paymentProvider = String(ticket.paymentProvider || "").trim().toLowerCase();
+
+  return (
+    paymentProvider === "paystack" &&
+    (status === "pending" || status === "cancelled")
+  );
+};
+
+const withClientTicketIdentity = (ticket) => {
+  if (!ticket || typeof ticket !== "object") {
+    return ticket;
+  }
+
+  if (!shouldHideTicketIdentityForClient(ticket)) {
+    return ticket;
+  }
+
+  const base =
+    typeof ticket.toObject === "function" ? ticket.toObject() : { ...ticket };
+
+  return {
+    ...base,
+    ticketCode: "",
+    barcodeValue: "",
+  };
+};
 
 const ensureEventCanBeManagedBy = async (event, userId) => {
   if (toIdString(event.organizerUserId) === toIdString(userId)) {
@@ -864,6 +1004,107 @@ const buildTicketCode = async () => {
   throw new ApiError(500, "Could not generate ticket code");
 };
 
+const buildTicketBarcodeValue = ({ ticketCode, eventId, ticketCategoryId = null }) =>
+  JSON.stringify({
+    provider: "vera",
+    ticketCode,
+    eventId: String(eventId),
+    ...(ticketCategoryId
+      ? {
+          ticketCategoryId: String(ticketCategoryId),
+        }
+      : {}),
+  });
+
+const buildPurchaseBatchId = () => new mongoose.Types.ObjectId().toString();
+
+const issueSeatTicketsForPurchase = async ({
+  event,
+  buyerUserId,
+  quantity,
+  unitPriceNaira,
+  attendeeName,
+  attendeeEmail,
+  selectedCategory,
+  ticketStatus,
+  paymentProvider,
+  paidAt,
+  verifiedAt,
+  purchaseBatchId,
+  paymentMetadataBase = {},
+}) => {
+  const normalizedQuantity = Math.max(1, Number(quantity || 1));
+  const createdTickets = [];
+
+  for (let seatIndex = 0; seatIndex < normalizedQuantity; seatIndex += 1) {
+    let created = null;
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const ticketCode = await buildTicketCode();
+
+      try {
+        created = await EventTicket.create({
+          eventId: event._id,
+          workspaceId: event.workspaceId || null,
+          organizerUserId: event.organizerUserId,
+          buyerUserId,
+          quantity: 1,
+          ticketCategoryId: selectedCategory?._id || null,
+          ticketCategoryName: selectedCategory?.name || "",
+          unitPriceNaira,
+          totalPriceNaira: unitPriceNaira,
+          currency: "NGN",
+          status: ticketStatus,
+          paymentProvider,
+          paymentMetadata: {
+            ...paymentMetadataBase,
+            purchaseBatchId,
+            purchaseBatchQuantity: normalizedQuantity,
+            purchaseSeatNumber: seatIndex + 1,
+            ticketCategoryId: selectedCategory ? String(selectedCategory._id) : null,
+            ticketCategoryName: selectedCategory?.name || null,
+          },
+          attendeeName,
+          attendeeEmail,
+          ticketCode,
+          barcodeValue: buildTicketBarcodeValue({
+            ticketCode,
+            eventId: event._id,
+            ticketCategoryId: selectedCategory?._id || null,
+          }),
+          paidAt,
+          verifiedAt,
+        });
+        break;
+      } catch (error) {
+        if (!isDuplicateKeyError(error)) {
+          throw error;
+        }
+
+        const duplicateFields = Object.keys(error.keyPattern || {});
+        const duplicateMessage = String(error.message || "").toLowerCase();
+        const isTicketCodeDuplicate =
+          duplicateFields.includes("ticketCode") ||
+          duplicateMessage.includes("ticketcode");
+
+        if (isTicketCodeDuplicate) {
+          continue;
+        }
+
+        throw new ApiError(409, "Could not issue ticket due to duplicate data");
+      }
+    }
+
+    if (!created) {
+      throw new ApiError(500, "Could not issue ticket. Please try again.");
+    }
+
+    createdTickets.push(created);
+  }
+
+  return createdTickets;
+};
+
 const isDuplicateKeyError = (error) => {
   if (!error || typeof error !== "object") {
     return false;
@@ -901,10 +1142,35 @@ const createEvent = async ({ actorUserId, payload }) => {
       ? Math.max(0, Number(categoryTotals.baseTicketPriceNaira || 0))
       : payload.ticketPriceNaira
     : 0;
+  const feeConfig = payload.isPaid
+    ? normalizeEventFeeConfig({
+        platformFeePercent: payload.platformFeePercent,
+        feeMode: payload.feeMode,
+      })
+    : normalizeEventFeeConfig({
+        platformFeePercent: DEFAULT_PLATFORM_FEE_PERCENT,
+        feeMode: "absorbed_by_organizer",
+      });
+  const sales = normalizeEventSalesPolicy({
+    eventStartsAt: startsAt,
+    expectedTickets,
+    baseTicketPriceNaira: ticketPriceNaira,
+    isPaid: Boolean(payload.isPaid),
+    hasTicketCategories: ticketCategories.length > 0,
+    incomingSales: payload.sales,
+    existingSales: null,
+  });
+  const center = await resolveOrUpsertEventCenter({
+    eventCenterId: payload.eventCenterId,
+    address: payload.address,
+    latitude: payload.latitude,
+    longitude: payload.longitude,
+  });
 
-  return Event.create({
+  const created = await Event.create({
     organizerUserId: actorUserId,
     workspaceId: workspace?._id ?? null,
+    eventCenterId: center?._id ?? null,
     name: payload.name,
     description: payload.description || "",
     imageUrl: payload.imageUrl || "",
@@ -916,6 +1182,8 @@ const createEvent = async ({ actorUserId, payload }) => {
     endsAt: new Date(payload.endsAt),
     timezone: payload.timezone || "Africa/Lagos",
     isPaid: payload.isPaid,
+    platformFeePercent: feeConfig.platformFeePercent,
+    feeMode: feeConfig.feeMode,
     ticketPriceNaira,
     currency: "NGN",
     expectedTickets,
@@ -923,8 +1191,22 @@ const createEvent = async ({ actorUserId, payload }) => {
     recurrence,
     pricing: payload.pricing || undefined,
     resale: payload.resale || undefined,
+    sales,
+    branding: payload.branding
+      ? {
+          ...payload.branding,
+          updatedAt: new Date(),
+        }
+      : undefined,
     status: payload.status || "published",
   });
+
+  await Promise.all([
+    recomputeOrganizerVerification({ organizerUserId: actorUserId }),
+    recomputeEventCenterVerification({ eventCenterId: center?._id || null }),
+  ]);
+
+  return created;
 };
 
 const listEvents = async ({
@@ -938,6 +1220,7 @@ const listEvents = async ({
   to,
   ticketType = "all",
   workspaceId,
+  salePhase = "main",
 }) => {
   const query = {
     status: "published",
@@ -968,8 +1251,12 @@ const listEvents = async ({
   }
 
   const rawItems = await Event.find(query)
-    .populate("organizerUserId", "fullName email avatarUrl title")
+    .populate(
+      "organizerUserId",
+      "fullName email avatarUrl title verificationBadge organizerBranding",
+    )
     .populate("workspaceId", "name slug")
+    .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt")
     .sort({ createdAt: -1 });
 
   const now = new Date();
@@ -982,9 +1269,25 @@ const listEvents = async ({
     to,
   });
 
-  const totalItems = filtered.length;
+  const phaseFiltered = filtered.filter((entry) => {
+    const currentPhase = resolveEventSalePhase(entry.event, now);
+    const saleAccess = resolveTicketSalesAccess(entry.event, now);
+
+    if (salePhase === "presale") {
+      return currentPhase === "presale" && saleAccess.canPurchase;
+    }
+
+    if (salePhase === "main") {
+      return currentPhase !== "presale";
+    }
+
+    return true;
+  });
+
+  const totalItems = phaseFiltered.length;
   const skip = (page - 1) * limit;
-  const paged = filtered.slice(skip, skip + limit);
+  const paged = phaseFiltered.slice(skip, skip + limit);
+  await refreshEventCentersForEvents(paged.map((entry) => entry.event));
 
   const eventIds = paged.map((item) => item.event._id);
   const organizerIds = paged.map((item) =>
@@ -1050,8 +1353,12 @@ const listMyEvents = async ({
 
   const [events, totalItems] = await Promise.all([
     Event.find(query)
-      .populate("organizerUserId", "fullName email avatarUrl title")
+      .populate(
+        "organizerUserId",
+        "fullName email avatarUrl title verificationBadge organizerBranding",
+      )
       .populate("workspaceId", "name slug")
+    .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit),
@@ -1059,6 +1366,7 @@ const listMyEvents = async ({
   ]);
 
   const now = new Date();
+  await refreshEventCentersForEvents(events);
   const eventIds = events.map((event) => event._id);
   const organizerIds = events.map((event) => toIdString(event.organizerUserId));
   const [statsMap, ratingsMap, organizerBadgeMap, coworkerTicketMap] =
@@ -1105,147 +1413,8 @@ const ensureEventCanBeViewedBy = async (event, actorUserId) => {
   await ensureEventCanBeManagedBy(event, actorUserId);
 };
 
-const getOrganizerVerificationMap = async (organizerIds) => {
-  const normalizedIds = [...new Set(
-    organizerIds
-      .map((id) => String(id || "").trim())
-      .filter((id) => objectIdRegex.test(id)),
-  )];
-
-  if (!normalizedIds.length) {
-    return new Map();
-  }
-
-  const objectIds = toObjectIds(normalizedIds);
-
-  const [eventStatsRows, attendeeRows, ratingRows] = await Promise.all([
-    Event.aggregate([
-      {
-        $match: {
-          organizerUserId: { $in: objectIds },
-        },
-      },
-      {
-        $group: {
-          _id: "$organizerUserId",
-          hostedEventsCount: { $sum: 1 },
-          publishedCount: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "published"] }, 1, 0],
-            },
-          },
-          cancelledCount: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0],
-            },
-          },
-        },
-      },
-    ]),
-    EventTicket.aggregate([
-      {
-        $match: {
-          organizerUserId: { $in: objectIds },
-          status: { $in: ["paid", "used"] },
-        },
-      },
-      {
-        $group: {
-          _id: "$organizerUserId",
-          attendees: { $sum: "$quantity" },
-        },
-      },
-    ]),
-    EventRating.aggregate([
-      {
-        $lookup: {
-          from: "events",
-          localField: "eventId",
-          foreignField: "_id",
-          as: "event",
-        },
-      },
-      { $unwind: "$event" },
-      {
-        $match: {
-          "event.organizerUserId": { $in: objectIds },
-        },
-      },
-      {
-        $group: {
-          _id: "$event.organizerUserId",
-          averageRating: { $avg: "$rating" },
-          ratingsCount: { $sum: 1 },
-        },
-      },
-    ]),
-  ]);
-
-  const eventStatsMap = new Map(
-    eventStatsRows.map((row) => [
-      String(row._id),
-      {
-        hostedEventsCount: Number(row.hostedEventsCount || 0),
-        publishedCount: Number(row.publishedCount || 0),
-        cancelledCount: Number(row.cancelledCount || 0),
-      },
-    ]),
-  );
-  const attendeeMap = new Map(
-    attendeeRows.map((row) => [String(row._id), Number(row.attendees || 0)]),
-  );
-  const ratingMap = new Map(
-    ratingRows.map((row) => [
-      String(row._id),
-      {
-        averageRating: Number(row.averageRating || 0),
-        ratingsCount: Number(row.ratingsCount || 0),
-      },
-    ]),
-  );
-
-  const result = new Map();
-
-  for (const organizerId of normalizedIds) {
-    const eventStats = eventStatsMap.get(organizerId) || {
-      hostedEventsCount: 0,
-      publishedCount: 0,
-      cancelledCount: 0,
-    };
-    const attendees = Number(attendeeMap.get(organizerId) || 0);
-    const ratingStats = ratingMap.get(organizerId) || {
-      averageRating: 0,
-      ratingsCount: 0,
-    };
-    const cancellationRate =
-      eventStats.hostedEventsCount > 0
-        ? eventStats.cancelledCount / eventStats.hostedEventsCount
-        : 1;
-
-    const score =
-      Number(eventStats.publishedCount >= 3) +
-      Number(attendees >= 80) +
-      Number(ratingStats.ratingsCount >= 8 && ratingStats.averageRating >= 4.2) +
-      Number(cancellationRate <= 0.25);
-
-    const verified = score >= 3;
-    const tier = verified && score >= 4 ? "elite" : verified ? "trusted" : null;
-
-    result.set(organizerId, {
-      verified,
-      tier,
-      score,
-      hostedEventsCount: eventStats.hostedEventsCount,
-      attendees,
-      averageRating: Number(ratingStats.averageRating.toFixed(2)),
-      ratingsCount: ratingStats.ratingsCount,
-      cancellationRate: Number((cancellationRate * 100).toFixed(1)),
-      rule: "published>=3, attendees>=80, rating>=4.2/8+, cancellation<=25%",
-    });
-  }
-
-  return result;
-};
+const getOrganizerVerificationMap = async (organizerIds) =>
+  getOrganizerVerificationMapFromVerification(organizerIds);
 
 const userHasEventTicket = async ({ eventId, userId }) => {
   if (!eventId || !userId) {
@@ -1288,6 +1457,281 @@ const normalizeEventResalePolicy = (event) => ({
   ),
 });
 
+const parseOptionalDate = (value) => {
+  const text = String(value || "").trim();
+
+  if (!text) {
+    return null;
+  }
+
+  const parsed = new Date(text);
+
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ApiError(400, "Invalid sales date value");
+  }
+
+  return parsed;
+};
+
+const normalizeEventSalesPolicy = ({
+  eventStartsAt,
+  expectedTickets,
+  baseTicketPriceNaira,
+  isPaid,
+  hasTicketCategories,
+  incomingSales,
+  existingSales,
+}) => {
+  const current = existingSales || {};
+  const raw = incomingSales || {};
+
+  const startsAt =
+    raw.startsAt !== undefined
+      ? parseOptionalDate(raw.startsAt)
+      : parseOptionalDate(current.startsAt);
+  const presaleEnabled =
+    raw.presaleEnabled !== undefined
+      ? Boolean(raw.presaleEnabled)
+      : Boolean(current.presaleEnabled);
+  const presaleStartsAt =
+    raw.presaleStartsAt !== undefined
+      ? parseOptionalDate(raw.presaleStartsAt)
+      : parseOptionalDate(current.presaleStartsAt);
+  const presaleEndsAt =
+    raw.presaleEndsAt !== undefined
+      ? parseOptionalDate(raw.presaleEndsAt)
+      : parseOptionalDate(current.presaleEndsAt);
+  const presaleQuantity =
+    raw.presaleQuantity !== undefined
+      ? Math.max(0, Math.round(Number(raw.presaleQuantity || 0)))
+      : Math.max(0, Math.round(Number(current.presaleQuantity || 0)));
+  const presalePriceNaira =
+    raw.presalePriceNaira !== undefined
+      ? Math.max(0, Math.round(Number(raw.presalePriceNaira || 0)))
+      : Math.max(0, Math.round(Number(current.presalePriceNaira || 0)));
+  const eventStarts = new Date(eventStartsAt);
+
+  if (startsAt && startsAt >= eventStarts) {
+    throw new ApiError(400, "Ticket sales start must be before event start time");
+  }
+
+  if (!presaleEnabled) {
+    return {
+      startsAt,
+      presaleEnabled: false,
+      presaleStartsAt: null,
+      presaleEndsAt: null,
+      presaleQuantity: 0,
+      presalePriceNaira: 0,
+    };
+  }
+
+  if (!isPaid) {
+    throw new ApiError(400, "Presale is available only for paid events");
+  }
+
+  if (hasTicketCategories) {
+    throw new ApiError(
+      400,
+      "Presale currently requires base pricing (ticket categories unsupported)",
+    );
+  }
+
+  if (!presaleStartsAt || !presaleEndsAt) {
+    throw new ApiError(
+      400,
+      "Presale requires both presaleStartsAt and presaleEndsAt",
+    );
+  }
+
+  if (presaleEndsAt <= presaleStartsAt) {
+    throw new ApiError(400, "presaleEndsAt must be later than presaleStartsAt");
+  }
+
+  if (startsAt && presaleEndsAt >= startsAt) {
+    throw new ApiError(400, "presaleEndsAt must be before ticket sales start");
+  }
+
+  if (presaleStartsAt >= eventStarts || presaleEndsAt >= eventStarts) {
+    throw new ApiError(400, "Presale must end before the event starts");
+  }
+
+  if (presaleQuantity <= 0) {
+    throw new ApiError(400, "Presale quantity must be at least 1");
+  }
+
+  if (presaleQuantity > Math.max(1, Number(expectedTickets || 1))) {
+    throw new ApiError(400, "Presale quantity cannot exceed expected tickets");
+  }
+
+  const basePrice = Math.max(1, Math.round(Number(baseTicketPriceNaira || 0)));
+  const maxAllowedPresalePrice = Math.max(
+    basePrice + 1,
+    Math.round(basePrice * 2),
+  );
+
+  if (presalePriceNaira <= 0) {
+    throw new ApiError(400, "Presale price must be greater than 0");
+  }
+
+  if (presalePriceNaira <= basePrice) {
+    throw new ApiError(
+      400,
+      "Presale price must be higher than the main ticket price",
+    );
+  }
+
+  if (presalePriceNaira > maxAllowedPresalePrice) {
+    throw new ApiError(
+      400,
+      `Presale price cannot exceed ₦${maxAllowedPresalePrice.toLocaleString()} (2x base price)`,
+    );
+  }
+
+  return {
+    startsAt,
+    presaleEnabled: true,
+    presaleStartsAt,
+    presaleEndsAt,
+    presaleQuantity,
+    presalePriceNaira,
+  };
+};
+
+const resolveEventSalePhase = (event, now = new Date()) => {
+  const sales = event?.sales || {};
+  const salesStartsAt = sales?.startsAt ? new Date(sales.startsAt) : null;
+  const presaleEnabled = Boolean(sales?.presaleEnabled);
+  const presaleStartsAt = sales?.presaleStartsAt
+    ? new Date(sales.presaleStartsAt)
+    : null;
+  const presaleEndsAt = sales?.presaleEndsAt ? new Date(sales.presaleEndsAt) : null;
+  const hasFuturePresale = Boolean(
+    presaleEnabled &&
+      presaleStartsAt &&
+      presaleEndsAt &&
+      now < presaleStartsAt,
+  );
+  const inPresaleWindow = Boolean(
+    presaleEnabled &&
+      presaleStartsAt &&
+      presaleEndsAt &&
+      now >= presaleStartsAt &&
+      now <= presaleEndsAt,
+  );
+
+  if (hasFuturePresale && !salesStartsAt) {
+    return "upcoming";
+  }
+
+  if (inPresaleWindow && (!salesStartsAt || now < salesStartsAt)) {
+    return "presale";
+  }
+
+  if (salesStartsAt && now < salesStartsAt) {
+    return "upcoming";
+  }
+
+  return "main";
+};
+
+const getEventSalesSnapshot = (event) => {
+  const sales = event?.sales || {};
+
+  return {
+    startsAt: sales?.startsAt ? new Date(sales.startsAt) : null,
+    presaleEnabled: Boolean(sales?.presaleEnabled),
+    presaleStartsAt: sales?.presaleStartsAt
+      ? new Date(sales.presaleStartsAt)
+      : null,
+    presaleEndsAt: sales?.presaleEndsAt ? new Date(sales.presaleEndsAt) : null,
+    presaleQuantity: Math.max(0, Math.round(Number(sales?.presaleQuantity || 0))),
+    presalePriceNaira: Math.max(
+      0,
+      Math.round(Number(sales?.presalePriceNaira || 0)),
+    ),
+  };
+};
+
+const resolveEventSalesWindowState = (event, now = new Date()) => {
+  const occurrence = resolveOccurrenceWindow(event, now);
+
+  if (!occurrence) {
+    return {
+      state: "ended",
+      occurrence: null,
+    };
+  }
+
+  if (now >= occurrence.startsAt) {
+    return {
+      state: "started",
+      occurrence,
+    };
+  }
+
+  return {
+    state: "open",
+    occurrence,
+  };
+};
+
+const resolveTicketSalesAccess = (event, now = new Date()) => {
+  const salesWindow = resolveEventSalesWindowState(event, now);
+  const sales = getEventSalesSnapshot(event);
+
+  if (salesWindow.state === "ended") {
+    return {
+      phase: "closed",
+      canPurchase: false,
+      reason: "Ticket sales are closed because this event has ended",
+    };
+  }
+
+  if (salesWindow.state === "started") {
+    return {
+      phase: "closed",
+      canPurchase: false,
+      reason: "Ticket sales close once the event starts",
+    };
+  }
+
+  const awaitingPresale = Boolean(
+    sales.presaleEnabled &&
+      sales.presaleStartsAt &&
+      sales.presaleEndsAt &&
+      now < sales.presaleStartsAt &&
+      (!sales.startsAt || now < sales.startsAt),
+  );
+
+  if (awaitingPresale) {
+    return {
+      phase: "upcoming",
+      canPurchase: false,
+      reason:
+        "Presale has not started yet. Please hold on till the presale start date.",
+    };
+  }
+
+  const phase = resolveEventSalePhase(event, now);
+
+  if (phase === "upcoming") {
+    return {
+      phase,
+      canPurchase: false,
+      reason: awaitingPresale
+        ? "Presale has not started yet. Please hold on till the presale start date."
+        : "Ticket sales have not started yet",
+    };
+  }
+
+  return {
+    phase,
+    canPurchase: true,
+    reason: "",
+  };
+};
+
 const clearTicketResaleFields = async (ticketId, extraSet = {}) =>
   EventTicket.findByIdAndUpdate(
     ticketId,
@@ -1313,6 +1757,16 @@ const buildCheckoutPayment = (attempt) => ({
   accessCode: String(attempt?.accessCode || "").trim(),
 });
 
+const buildCancelActionUrl = (callbackUrl) => {
+  const base = String(callbackUrl || "").trim();
+
+  if (!base) {
+    return "";
+  }
+
+  return `${base}${base.includes("?") ? "&" : "?"}paystack_status=cancelled`;
+};
+
 const createPaymentAttemptForCheckout = async ({
   kind,
   buyerUserId,
@@ -1327,6 +1781,8 @@ const createPaymentAttemptForCheckout = async ({
   referenceSuffix = "",
 }) => {
   const reference = generatePaystackReference(kind, referenceSuffix);
+  const normalizedCallbackUrl = String(callbackUrl || "").trim();
+  const cancelActionUrl = buildCancelActionUrl(normalizedCallbackUrl);
 
   const attempt = await PaymentAttempt.create({
     reference,
@@ -1339,7 +1795,7 @@ const createPaymentAttemptForCheckout = async ({
     acceptedBidId,
     amountKobo: Math.max(1, Math.round(Number(amountKobo || 0))),
     currency: "NGN",
-    callbackUrl: String(callbackUrl || "").trim(),
+    callbackUrl: normalizedCallbackUrl,
   });
 
   try {
@@ -1350,6 +1806,7 @@ const createPaymentAttemptForCheckout = async ({
       reference,
       metadata: {
         ...metadata,
+        ...(cancelActionUrl ? { cancel_action: cancelActionUrl } : {}),
         source: "vera-mobile",
         kind,
         paymentAttemptId: String(attempt._id),
@@ -1376,6 +1833,7 @@ const markTicketPaidFromVerifiedPayment = async ({
   ticket,
   paymentReference,
   paymentData,
+  persistPaymentReference = true,
 }) => {
   const amountKobo = Number(paymentData?.amount || 0);
   const expectedKobo = Math.round(Number(ticket.totalPriceNaira || 0) * 100);
@@ -1387,16 +1845,57 @@ const markTicketPaidFromVerifiedPayment = async ({
     });
   }
 
-  ticket.status = "paid";
-  ticket.paidAt = ticket.paidAt || new Date();
-  ticket.verifiedAt = new Date();
-  ticket.paymentProvider = "paystack";
-  ticket.paymentReference = paymentReference;
-  ticket.paymentMetadata = {
-    ...(ticket.paymentMetadata || {}),
-    verifyPayload: paymentData,
-  };
-  await ticket.save();
+  const shouldIssueFreshIdentity =
+    String(ticket.paymentProvider || "").toLowerCase() === "paystack" &&
+    String(ticket.status || "").toLowerCase() === "pending";
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (shouldIssueFreshIdentity) {
+      const ticketCode = await buildTicketCode();
+      ticket.ticketCode = ticketCode;
+      ticket.barcodeValue = buildTicketBarcodeValue({
+        ticketCode,
+        eventId: ticket.eventId,
+        ticketCategoryId: ticket.ticketCategoryId || null,
+      });
+    }
+
+    ticket.status = "paid";
+    ticket.paidAt = ticket.paidAt || new Date();
+    ticket.verifiedAt = new Date();
+    ticket.paymentProvider = "paystack";
+    if (persistPaymentReference && paymentReference) {
+      ticket.paymentReference = paymentReference;
+    }
+    ticket.paymentMetadata = {
+      ...(ticket.paymentMetadata || {}),
+      checkoutReference: paymentReference || ticket.paymentReference || "",
+      verifyPayload: paymentData,
+    };
+
+    try {
+      await ticket.save();
+      return ticket;
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) {
+        throw error;
+      }
+
+      const duplicateFields = Object.keys(error.keyPattern || {});
+      const duplicateMessage = String(error.message || "").toLowerCase();
+      const isTicketCodeDuplicate =
+        duplicateFields.includes("ticketCode") ||
+        duplicateMessage.includes("ticketcode");
+
+      if (shouldIssueFreshIdentity && isTicketCodeDuplicate) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new ApiError(500, "Could not finalize ticket identity after payment.");
 
   return ticket;
 };
@@ -1423,7 +1922,38 @@ const getPaymentAttemptForVerification = async ({
       ? { kind, $or: [{ ticketId }, { resaleSourceTicketId: ticketId }] }
       : { $or: [{ ticketId }, { resaleSourceTicketId: ticketId }] };
 
-    return PaymentAttempt.findOne(query).sort({ createdAt: -1 });
+    const byTicketId = await PaymentAttempt.findOne(query).sort({ createdAt: -1 });
+
+    if (byTicketId) {
+      return byTicketId;
+    }
+
+    const relatedTicket = await EventTicket.findById(ticketId).select(
+      "paymentMetadata paymentReference",
+    );
+    const paymentAttemptId = String(
+      relatedTicket?.paymentMetadata?.paymentAttemptId || "",
+    ).trim();
+
+    if (paymentAttemptId && objectIdRegex.test(paymentAttemptId)) {
+      const byLinkedAttempt = await PaymentAttempt.findById(paymentAttemptId);
+
+      if (byLinkedAttempt && (!kind || byLinkedAttempt.kind === kind)) {
+        return byLinkedAttempt;
+      }
+    }
+
+    const ticketPaymentReference = String(relatedTicket?.paymentReference || "").trim();
+
+    if (ticketPaymentReference) {
+      const byTicketReference = await PaymentAttempt.findOne({
+        reference: ticketPaymentReference,
+      }).sort({ createdAt: -1 });
+
+      if (!kind || byTicketReference?.kind === kind) {
+        return byTicketReference;
+      }
+    }
   }
 
   return null;
@@ -1469,50 +1999,98 @@ const finalizeTicketPurchasePayment = async ({
   paymentReference,
   paymentData,
 }) => {
-  const wasAlreadyUsable = ticket.status === "paid" || ticket.status === "used";
+  const paymentAttemptId = paymentAttempt?._id
+    ? String(paymentAttempt._id)
+    : "";
+  const primaryTicketId = String(
+    paymentAttempt?.ticketId || ticket?._id || "",
+  ).trim();
+  let ticketsToFinalize = [ticket];
 
-  if (!wasAlreadyUsable) {
-    await markTicketPaidFromVerifiedPayment({
-      ticket,
-      paymentReference,
-      paymentData,
+  if (paymentAttemptId) {
+    const batchQuery = {
+      buyerUserId: toIdString(ticket?.buyerUserId),
+      eventId: toIdString(ticket?.eventId),
+      paymentProvider: "paystack",
+      status: { $in: ["pending", "paid", "used"] },
+      $or: [
+        { "paymentMetadata.paymentAttemptId": paymentAttemptId },
+      ],
+    };
+
+    if (primaryTicketId && objectIdRegex.test(primaryTicketId)) {
+      batchQuery.$or.push({ _id: primaryTicketId });
+    }
+
+    const batchTickets = await EventTicket.find(batchQuery).sort({
+      createdAt: 1,
     });
+
+    if (batchTickets.length) {
+      ticketsToFinalize = batchTickets;
+    }
+  }
+
+  let newlyActivatedCount = 0;
+  let primaryTicket = ticket;
+
+  for (const currentTicket of ticketsToFinalize) {
+    const isPrimaryTicket = String(currentTicket._id) === primaryTicketId;
+    const wasAlreadyUsable =
+      currentTicket.status === "paid" || currentTicket.status === "used";
+
+    if (!wasAlreadyUsable) {
+      await markTicketPaidFromVerifiedPayment({
+        ticket: currentTicket,
+        paymentReference,
+        paymentData,
+        persistPaymentReference: isPrimaryTicket,
+      });
+      newlyActivatedCount += 1;
+    }
+
+    if (isPrimaryTicket) {
+      primaryTicket = currentTicket;
+    }
   }
 
   await markPaymentAttemptVerified({
     paymentAttempt,
     paymentData,
-    fulfillmentTicketId: ticket._id,
+    fulfillmentTicketId: primaryTicket?._id || ticket?._id,
   });
 
-  if (!wasAlreadyUsable) {
+  if (newlyActivatedCount > 0) {
     void createNotification({
       userId: toIdString(ticket.buyerUserId),
       type: "ticket.purchase.completed",
       title: "Payment confirmed",
-      message: "Your ticket is ready to use.",
+      message:
+        newlyActivatedCount > 1
+          ? `${newlyActivatedCount} tickets are ready to use.`
+          : "Your ticket is ready to use.",
       data: {
         target: "ticket-details",
-        ticketId: String(ticket._id),
-        eventId: toIdString(ticket.eventId),
+        ticketId: String(primaryTicket?._id || ticket._id),
+        eventId: toIdString(primaryTicket?.eventId || ticket.eventId),
       },
       push: true,
     }).catch(() => null);
   }
 
-  return ticket;
+  return primaryTicket || ticket;
 };
 
 const populateResaleTicketQuery = (query) =>
   query
-    .populate("buyerUserId", "fullName email avatarUrl title")
-    .populate("resaleBuyerUserId", "fullName email avatarUrl title")
-    .populate("usedByUserId", "fullName email avatarUrl title")
+    .populate("buyerUserId", "fullName email avatarUrl title verificationBadge")
+    .populate("resaleBuyerUserId", "fullName email avatarUrl title verificationBadge")
+    .populate("usedByUserId", "fullName email avatarUrl title verificationBadge")
     .populate({
       path: "eventId",
       populate: {
         path: "organizerUserId",
-        select: "fullName email avatarUrl title",
+        select: "fullName email avatarUrl title verificationBadge",
       },
     });
 
@@ -1646,10 +2224,31 @@ const ensureTicketEligibleForResale = async ({ ticket, actorUserId }) => {
     throw new ApiError(404, "Event not found");
   }
 
+  if (toIdString(event.organizerUserId) === String(actorUserId)) {
+    throw new ApiError(
+      403,
+      "Event organizers cannot resell tickets for their own events",
+    );
+  }
+
+  if (Number(ticket.totalPriceNaira || 0) <= 0) {
+    throw new ApiError(400, "Only purchased tickets can be resold");
+  }
+
   const policy = normalizeEventResalePolicy(event);
 
   if (!policy.enabled) {
     throw new ApiError(403, "Ticket resale is disabled for this event");
+  }
+
+  const salesWindow = resolveEventSalesWindowState(event, new Date());
+
+  if (salesWindow.state === "ended") {
+    throw new ApiError(409, "Resale is closed because this event has ended");
+  }
+
+  if (salesWindow.state === "started") {
+    throw new ApiError(409, "Resale closes once the event starts");
   }
 
   return {
@@ -1732,8 +2331,8 @@ const mapEventPostForResponse = ({ post, likedByMe = false }) => {
 
 const getPostWithAccess = async ({ postId, actorUserId, requireParticipant = false }) => {
   const post = await EventPost.findById(postId)
-    .populate("authorUserId", "fullName email avatarUrl title")
-    .populate("eventId", "name imageUrl address organizerUserId status");
+    .populate("authorUserId", "fullName email avatarUrl title verificationBadge")
+    .populate("eventId", "name imageUrl address organizerUserId status eventCenterId");
 
   if (!post || !post.eventId) {
     throw new ApiError(404, "Post not found");
@@ -1768,6 +2367,7 @@ const listFeaturedEvents = async ({
   actorUserId,
   limit = 8,
   workspaceId,
+  salePhase = "main",
 }) => {
   const safeLimit = Math.min(20, Math.max(1, Number(limit) || 8));
   const query = {
@@ -1780,8 +2380,12 @@ const listFeaturedEvents = async ({
   }
 
   const rawItems = await Event.find(query)
-    .populate("organizerUserId", "fullName email avatarUrl title")
+    .populate(
+      "organizerUserId",
+      "fullName email avatarUrl title verificationBadge organizerBranding",
+    )
     .populate("workspaceId", "name slug")
+    .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt")
     .sort({ createdAt: -1 })
     .limit(140);
 
@@ -1793,8 +2397,25 @@ const listFeaturedEvents = async ({
     sort: "dateAsc",
   });
 
-  const eventIds = filtered.map((item) => item.event._id);
-  const organizerIds = filtered.map((item) =>
+  const phaseFiltered = filtered.filter((entry) => {
+    const currentPhase = resolveEventSalePhase(entry.event, now);
+    const saleAccess = resolveTicketSalesAccess(entry.event, now);
+
+    if (salePhase === "presale") {
+      return currentPhase === "presale" && saleAccess.canPurchase;
+    }
+
+    if (salePhase === "main") {
+      return currentPhase !== "presale";
+    }
+
+    return true;
+  });
+
+  await refreshEventCentersForEvents(phaseFiltered.map((entry) => entry.event));
+
+  const eventIds = phaseFiltered.map((item) => item.event._id);
+  const organizerIds = phaseFiltered.map((item) =>
     toIdString(item.event.organizerUserId),
   );
   const [statsMap, ratingsMap, myTicketMap, organizerBadgeMap, coworkerTicketMap] =
@@ -1806,7 +2427,7 @@ const listFeaturedEvents = async ({
       getCoworkerTicketCountMap({ eventIds, actorUserId }),
     ]);
 
-  const scored = filtered.map((entry) => {
+  const scored = phaseFiltered.map((entry) => {
     const key = String(entry.event._id);
     const mapped = mapEventForResponse({
       event: entry.event,
@@ -1850,7 +2471,9 @@ const buildOrganizerProfile = async ({ event, actorUserId, now }) => {
   const organizerUser =
     typeof event.organizerUserId === "object"
       ? event.organizerUserId
-      : await User.findById(organizerId).select("fullName email avatarUrl title");
+      : await User.findById(organizerId).select(
+          "fullName email avatarUrl title verificationBadge organizerBranding",
+        );
 
   const [hostedEventsCount, attendeesRows, organizerEvents] = await Promise.all([
     Event.countDocuments({
@@ -1875,13 +2498,18 @@ const buildOrganizerProfile = async ({ event, actorUserId, now }) => {
       _id: { $ne: event._id },
       status: { $in: ["draft", "published", "cancelled"] },
     })
-      .populate("organizerUserId", "fullName email avatarUrl title")
+      .populate(
+        "organizerUserId",
+        "fullName email avatarUrl title verificationBadge organizerBranding",
+      )
       .populate("workspaceId", "name slug")
+    .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt")
       .sort({ startsAt: -1, createdAt: -1 })
       .limit(10),
   ]);
 
   const organizerEventIds = organizerEvents.map((item) => item._id);
+  await refreshEventCentersForEvents(organizerEvents);
   const [statsMap, ratingsMap, organizerBadgeMap] = await Promise.all([
     getEventTicketStatsMap(organizerEventIds),
     getEventRatingsSummaryMap(organizerEventIds, actorUserId),
@@ -1927,7 +2555,7 @@ const getOrganizerProfileById = async ({
   actorUserId,
 }) => {
   const organizer = await User.findById(organizerUserId).select(
-    "fullName email avatarUrl title bio",
+    "fullName email avatarUrl title verificationBadge organizerBranding bio",
   );
 
   if (!organizer) {
@@ -1938,8 +2566,12 @@ const getOrganizerProfileById = async ({
     organizerUserId,
   })
     .sort({ startsAt: -1, createdAt: -1 })
-    .populate("organizerUserId", "fullName email avatarUrl title bio")
-    .populate("workspaceId", "name slug");
+    .populate(
+      "organizerUserId",
+      "fullName email avatarUrl title verificationBadge organizerBranding bio",
+    )
+    .populate("workspaceId", "name slug")
+    .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt");
 
   if (referenceEvent) {
     return buildOrganizerProfile({
@@ -1965,14 +2597,19 @@ const getOrganizerProfileById = async ({
 
 const getEventById = async ({ eventId, actorUserId }) => {
   const event = await Event.findById(eventId)
-    .populate("organizerUserId", "fullName email avatarUrl title")
-    .populate("workspaceId", "name slug");
+    .populate(
+      "organizerUserId",
+      "fullName email avatarUrl title verificationBadge organizerBranding",
+    )
+    .populate("workspaceId", "name slug")
+    .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt");
 
   if (!event) {
     throw new ApiError(404, "Event not found");
   }
 
   await ensureEventCanBeViewedBy(event, actorUserId);
+  await refreshEventCentersForEvents([event]);
 
   const now = new Date();
   const occurrence = resolveOccurrenceWindow(event, now) || {
@@ -1987,13 +2624,13 @@ const getEventById = async ({ eventId, actorUserId }) => {
       EventTicket.find({
         eventId,
         buyerUserId: actorUserId,
-        status: { $in: ["pending", "paid", "used", "cancelled"] },
+        status: { $in: ["paid", "used"] },
       })
         .sort({ createdAt: -1 })
         .limit(10)
-        .populate("usedByUserId", "fullName email avatarUrl title"),
+        .populate("usedByUserId", "fullName email avatarUrl title verificationBadge"),
       EventRating.find({ eventId: event._id })
-        .populate("userId", "fullName avatarUrl title")
+        .populate("userId", "fullName avatarUrl title verificationBadge")
         .sort({ createdAt: -1 })
         .limit(8),
       buildOrganizerProfile({
@@ -2025,7 +2662,7 @@ const getEventById = async ({ eventId, actorUserId }) => {
 
   return {
     event: mappedEvent,
-    myTickets,
+    myTickets: myTickets.map((ticket) => withClientTicketIdentity(ticket)),
     organizerProfile,
     featuredEvents: featuredEvents
       .filter((item) => String(item._id) !== String(event._id))
@@ -2086,8 +2723,11 @@ const updateEvent = async ({
     payload.isPaid !== undefined ? payload.isPaid : Boolean(event.isPaid);
   const hasPricingShapeChange =
     payload.isPaid !== undefined ||
+    payload.platformFeePercent !== undefined ||
+    payload.feeMode !== undefined ||
     payload.ticketPriceNaira !== undefined ||
-    hasTicketCategoriesUpdate;
+    hasTicketCategoriesUpdate ||
+    payload.sales !== undefined;
 
   if (payload.isPaid === true && payload.ticketPriceNaira !== undefined && payload.ticketPriceNaira <= 0) {
     throw new ApiError(400, "Paid events require ticketPriceNaira greater than 0");
@@ -2128,7 +2768,37 @@ const updateEvent = async ({
     );
   }
 
-  Object.assign(event, payload);
+  const previousCenterId = toIdString(event.eventCenterId);
+  const shouldResolveEventCenter =
+    payload.eventCenterId !== undefined ||
+    payload.address !== undefined ||
+    payload.latitude !== undefined ||
+    payload.longitude !== undefined;
+
+  if (shouldResolveEventCenter) {
+    const center = await resolveOrUpsertEventCenter({
+      eventCenterId: payload.eventCenterId,
+      address:
+        payload.address !== undefined ? payload.address : event.address,
+      latitude:
+        payload.latitude !== undefined ? payload.latitude : event.latitude,
+      longitude:
+        payload.longitude !== undefined ? payload.longitude : event.longitude,
+    });
+    event.eventCenterId = center?._id ?? null;
+  }
+
+  const payloadWithoutCenterId = { ...payload };
+  delete payloadWithoutCenterId.eventCenterId;
+  Object.assign(event, payloadWithoutCenterId);
+
+  if (payload.branding) {
+    event.branding = {
+      ...(event.branding || {}),
+      ...payload.branding,
+      updatedAt: new Date(),
+    };
+  }
 
   if (hasTicketCategoriesUpdate) {
     const normalizedCategories = normalizeTicketCategories({
@@ -2154,6 +2824,8 @@ const updateEvent = async ({
 
   if (!event.isPaid) {
     event.ticketPriceNaira = 0;
+    event.platformFeePercent = DEFAULT_PLATFORM_FEE_PERCENT;
+    event.feeMode = "absorbed_by_organizer";
 
     if (Array.isArray(event.ticketCategories) && event.ticketCategories.length) {
       event.ticketCategories = event.ticketCategories.map((category) => ({
@@ -2163,6 +2835,17 @@ const updateEvent = async ({
         priceNaira: 0,
       }));
     }
+  } else {
+    const normalizedFee = normalizeEventFeeConfig({
+      platformFeePercent:
+        payload.platformFeePercent !== undefined
+          ? payload.platformFeePercent
+          : event.platformFeePercent,
+      feeMode: payload.feeMode !== undefined ? payload.feeMode : event.feeMode,
+    });
+
+    event.platformFeePercent = normalizedFee.platformFeePercent;
+    event.feeMode = normalizedFee.feeMode;
   }
 
   if (payload.recurrence) {
@@ -2179,7 +2862,44 @@ const updateEvent = async ({
     };
   }
 
+  if (payload.sales || hasPricingShapeChange) {
+    event.sales = normalizeEventSalesPolicy({
+      eventStartsAt: event.startsAt,
+      expectedTickets: event.expectedTickets,
+      baseTicketPriceNaira: event.ticketPriceNaira,
+      isPaid: Boolean(event.isPaid),
+      hasTicketCategories:
+        Array.isArray(event.ticketCategories) && event.ticketCategories.length > 0,
+      incomingSales: payload.sales,
+      existingSales: event.sales,
+    });
+  }
+
   await event.save();
+  const nextCenterId = toIdString(event.eventCenterId);
+  const recomputeTasks = [
+    recomputeOrganizerVerification({
+      organizerUserId: event.organizerUserId,
+    }),
+  ];
+
+  if (nextCenterId) {
+    recomputeTasks.push(
+      recomputeEventCenterVerification({
+        eventCenterId: nextCenterId,
+      }),
+    );
+  }
+
+  if (previousCenterId && previousCenterId !== nextCenterId) {
+    recomputeTasks.push(
+      recomputeEventCenterVerification({
+        eventCenterId: previousCenterId,
+      }),
+    );
+  }
+
+  await Promise.all(recomputeTasks);
 
   return event;
 };
@@ -2205,9 +2925,21 @@ const deleteEvent = async ({ eventId, actorUserId }) => {
     );
   }
 
+  const affectedOrganizerId = toIdString(event.organizerUserId);
+  const affectedCenterId = toIdString(event.eventCenterId);
+
   await Promise.all([
     Event.deleteOne({ _id: event._id }),
     EventTicket.deleteMany({ eventId: event._id }),
+  ]);
+
+  await Promise.all([
+    recomputeOrganizerVerification({
+      organizerUserId: affectedOrganizerId,
+    }),
+    recomputeEventCenterVerification({
+      eventCenterId: affectedCenterId,
+    }),
   ]);
 
   return {
@@ -2216,7 +2948,11 @@ const deleteEvent = async ({ eventId, actorUserId }) => {
   };
 };
 
-const countReservedTickets = async (eventId, ticketCategoryId = null) => {
+const countReservedTickets = async (
+  eventId,
+  ticketCategoryId = null,
+  salePhase = null,
+) => {
   const pendingCutoff = new Date(Date.now() - 30 * 60 * 1000);
 
   const rows = await EventTicket.aggregate([
@@ -2228,6 +2964,11 @@ const countReservedTickets = async (eventId, ticketCategoryId = null) => {
               ticketCategoryId: new mongoose.Types.ObjectId(
                 String(ticketCategoryId),
               ),
+            }
+          : {}),
+        ...(salePhase
+          ? {
+              "paymentMetadata.salePhase": String(salePhase),
             }
           : {}),
         $or: [
@@ -2252,6 +2993,7 @@ const initializeTicketPurchase = async ({
   actorUserId,
   payload,
 }) => {
+  const now = new Date();
   const [event, buyer] = await Promise.all([
     Event.findById(eventId),
     User.findById(actorUserId),
@@ -2269,7 +3011,31 @@ const initializeTicketPurchase = async ({
     throw new ApiError(409, "Only published events can issue tickets");
   }
 
-  const occurrence = resolveOccurrenceWindow(event, new Date());
+  const saleAccess = resolveTicketSalesAccess(event, now);
+
+  if (!saleAccess.canPurchase) {
+    throw new ApiError(409, saleAccess.reason || "Ticket sales are not open yet");
+  }
+
+  const salesSnapshot = getEventSalesSnapshot(event);
+  const waitingForPresale = Boolean(
+    salesSnapshot.presaleEnabled &&
+      salesSnapshot.presaleStartsAt &&
+      now < salesSnapshot.presaleStartsAt &&
+      (!salesSnapshot.startsAt || now < salesSnapshot.startsAt),
+  );
+
+  if (waitingForPresale) {
+    throw new ApiError(
+      409,
+      "Presale has not started yet. Please hold on till the presale start date.",
+      {
+        presaleStartsAt: salesSnapshot.presaleStartsAt,
+      },
+    );
+  }
+
+  const occurrence = resolveOccurrenceWindow(event, now);
 
   if (!occurrence) {
     throw new ApiError(409, "This event has no available upcoming occurrence");
@@ -2278,6 +3044,15 @@ const initializeTicketPurchase = async ({
   const quantity = Number(payload.quantity || 1);
   const hasTicketCategories =
     Array.isArray(event.ticketCategories) && event.ticketCategories.length > 0;
+  const isPresalePurchase = saleAccess.phase === "presale";
+
+  if (isPresalePurchase && hasTicketCategories) {
+    throw new ApiError(
+      409,
+      "Presale checkout currently supports base pricing only.",
+    );
+  }
+
   const requestedCategoryId = String(payload.ticketCategoryId || "").trim();
   const selectedCategory = hasTicketCategories
     ? event.ticketCategories.find(
@@ -2290,19 +3065,39 @@ const initializeTicketPurchase = async ({
     throw new ApiError(400, "Select a valid ticket category before checkout");
   }
 
-  const reserved = await countReservedTickets(
-    event._id,
-    selectedCategory ? String(selectedCategory._id) : null,
-  );
+  const reserved = isPresalePurchase
+    ? await countReservedTickets(event._id, null, "presale")
+    : await countReservedTickets(
+        event._id,
+        selectedCategory ? String(selectedCategory._id) : null,
+      );
 
-  if (selectedCategory) {
+  if (isPresalePurchase) {
+    const presaleQuantity = Math.max(
+      0,
+      Math.round(Number(event.sales?.presaleQuantity || 0)),
+    );
+
+    if (presaleQuantity <= 0) {
+      throw new ApiError(409, "Presale inventory is not available for this event");
+    }
+
+    if (reserved + quantity > presaleQuantity) {
+      throw new ApiError(409, "Presale tickets are sold out for that quantity");
+    }
+  }
+
+  if (!isPresalePurchase && selectedCategory) {
     if (reserved + quantity > Number(selectedCategory.quantity || 0)) {
       throw new ApiError(
         409,
         `The ${selectedCategory.name} category is sold out for that quantity`,
       );
     }
-  } else if (reserved + quantity > Number(event.expectedTickets || 0)) {
+  } else if (
+    !isPresalePurchase &&
+    reserved + quantity > Number(event.expectedTickets || 0)
+  ) {
     throw new ApiError(409, "Ticket capacity has been reached");
   }
 
@@ -2313,12 +3108,23 @@ const initializeTicketPurchase = async ({
     pendingTickets: 0,
     now: new Date(),
   });
-  const unitPriceNaira = event.isPaid
-    ? selectedCategory
+  const baseUnitPriceNaira = event.isPaid
+    ? isPresalePurchase
+      ? Math.max(0, Math.round(Number(event.sales?.presalePriceNaira || 0)))
+      : selectedCategory
       ? Number(selectedCategory.priceNaira || 0)
       : Number(dynamicPricing.currentTicketPriceNaira || event.ticketPriceNaira || 0)
     : 0;
-  const totalPriceNaira = unitPriceNaira * quantity;
+  const pricingBreakdown = computePrimaryTicketPricing({
+    baseUnitPriceNaira,
+    quantity,
+    platformFeePercent: Number(
+      event.platformFeePercent ?? DEFAULT_PLATFORM_FEE_PERCENT,
+    ),
+    feeMode: event.feeMode || "absorbed_by_organizer",
+  });
+  const checkoutUnitPriceNaira = pricingBreakdown.unitCheckoutPriceNaira;
+  const totalCheckoutNaira = pricingBreakdown.totalCheckoutNaira;
   const attendeeEmail = String(payload.email || buyer.email || "").trim().toLowerCase();
 
   if (!attendeeEmail) {
@@ -2335,87 +3141,76 @@ const initializeTicketPurchase = async ({
     );
   }
 
-  let baseTicket = null;
-
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const ticketCode = await buildTicketCode();
-    const barcodeValue = JSON.stringify({
-      provider: "vera",
-      ticketCode,
-      eventId: String(event._id),
-    });
-
-    try {
-      baseTicket = await EventTicket.create({
+  if (event.isPaid && !shouldBypassPaystack) {
+    await EventTicket.updateMany(
+      {
         eventId: event._id,
-        workspaceId: event.workspaceId || null,
-        organizerUserId: event.organizerUserId,
         buyerUserId: actorUserId,
-        quantity,
-        ticketCategoryId: selectedCategory?._id || null,
-        ticketCategoryName: selectedCategory?.name || "",
-        unitPriceNaira,
-        totalPriceNaira,
-        currency: "NGN",
-        status: event.isPaid && !shouldBypassPaystack ? "pending" : "paid",
-        paymentProvider: event.isPaid && !shouldBypassPaystack ? "paystack" : "none",
-        paymentMetadata: {
-          pricing: dynamicPricing.pricingInsight,
-          basePriceNaira: Number(event.ticketPriceNaira || 0),
-          appliedUnitPriceNaira: unitPriceNaira,
-          ticketCategoryId: selectedCategory ? String(selectedCategory._id) : null,
-          ticketCategoryName: selectedCategory?.name || null,
+        paymentProvider: "paystack",
+        status: "pending",
+      },
+      {
+        $set: {
+          status: "cancelled",
+          cancelledAt: new Date(),
+          "paymentMetadata.cancelReason": "checkout_restarted",
         },
-        attendeeName: String(payload.attendeeName || buyer.fullName || "").trim(),
-        attendeeEmail,
-        ticketCode,
-        barcodeValue: selectedCategory
-          ? JSON.stringify({
-              provider: "vera",
-              ticketCode,
-              eventId: String(event._id),
-              ticketCategoryId: String(selectedCategory._id),
-            })
-          : barcodeValue,
-        paidAt: event.isPaid && !shouldBypassPaystack ? null : new Date(),
-        verifiedAt: event.isPaid && !shouldBypassPaystack ? null : new Date(),
-      });
-      break;
-    } catch (error) {
-      if (!isDuplicateKeyError(error)) {
-        throw error;
-      }
-
-      const duplicateFields = Object.keys(error.keyPattern || {});
-      const duplicateMessage = String(error.message || "").toLowerCase();
-      const isTicketCodeDuplicate =
-        duplicateFields.includes("ticketCode") ||
-        duplicateMessage.includes("ticketcode");
-
-      if (isTicketCodeDuplicate) {
-        continue;
-      }
-
-      throw new ApiError(409, "Could not issue ticket due to duplicate data");
-    }
+      },
+    );
   }
 
-  if (!baseTicket) {
-    throw new ApiError(500, "Could not issue ticket. Please try again.");
-  }
+  const purchaseBatchId = buildPurchaseBatchId();
+  const attendeeName = String(payload.attendeeName || buyer.fullName || "").trim();
+  const initialTicketStatus =
+    event.isPaid && !shouldBypassPaystack ? "pending" : "paid";
+  const initialPaymentProvider =
+    event.isPaid && !shouldBypassPaystack ? "paystack" : "none";
+  const instantTicketStamp = event.isPaid && !shouldBypassPaystack ? null : new Date();
+  const issuedTickets = await issueSeatTicketsForPurchase({
+    event,
+    buyerUserId: actorUserId,
+    quantity,
+    unitPriceNaira: checkoutUnitPriceNaira,
+    attendeeName,
+    attendeeEmail,
+    selectedCategory,
+    ticketStatus: initialTicketStatus,
+    paymentProvider: initialPaymentProvider,
+    paidAt: instantTicketStamp,
+    verifiedAt: instantTicketStamp,
+    purchaseBatchId,
+    paymentMetadataBase: {
+      pricing: dynamicPricing.pricingInsight,
+      basePriceNaira: Number(event.ticketPriceNaira || 0),
+      appliedUnitPriceNaira: checkoutUnitPriceNaira,
+      batchTotalPriceNaira: totalCheckoutNaira,
+      pricingBreakdown,
+      salePhase: isPresalePurchase ? "presale" : "main",
+    },
+  });
+
+  const primaryTicket = issuedTickets[0];
 
   if (!event.isPaid || shouldBypassPaystack) {
     return {
       requiresPayment: false,
-      ticket: baseTicket,
+      ticket: withClientTicketIdentity(primaryTicket),
       payment: null,
       paymentAttemptId: null,
       kind: "ticket_purchase",
+      pricingBreakdown: {
+        basePriceNaira: pricingBreakdown.basePriceNaira,
+        veraFeeNaira: pricingBreakdown.veraFeeNaira,
+        totalCheckoutNaira: pricingBreakdown.totalCheckoutNaira,
+        organizerNetNaira: pricingBreakdown.organizerNetNaira,
+        platformFeePercent: pricingBreakdown.platformFeePercent,
+        feeMode: pricingBreakdown.feeMode,
+      },
     };
   }
 
   const callbackUrl = String(payload.callbackUrl || env.paystackCallbackUrl || "").trim();
-  const paystackAmountKobo = Math.round(totalPriceNaira * 100);
+  const paystackAmountKobo = Math.round(totalCheckoutNaira * 100);
   let paymentAttempt;
 
   try {
@@ -2423,46 +3218,78 @@ const initializeTicketPurchase = async ({
       kind: "ticket_purchase",
       buyerUserId: actorUserId,
       eventId: event._id,
-      ticketId: baseTicket._id,
+      ticketId: primaryTicket._id,
       amountKobo: paystackAmountKobo,
       callbackUrl,
       email: attendeeEmail,
-      referenceSuffix: String(baseTicket._id),
+      referenceSuffix: String(primaryTicket._id),
       metadata: {
-        ticketId: String(baseTicket._id),
+        ticketId: String(primaryTicket._id),
         eventId: String(event._id),
         buyerUserId: String(actorUserId),
         quantity,
+        purchaseBatchId,
+        pricingBreakdown,
+        ticketIds: issuedTickets.map((item) => String(item._id)),
       },
     });
   } catch (error) {
-    baseTicket.status = "cancelled";
-    baseTicket.cancelledAt = new Date();
-    baseTicket.paymentMetadata = {
-      ...(baseTicket.paymentMetadata || {}),
-      initializeError:
-        error instanceof Error ? error.message : String(error),
-    };
-    await baseTicket.save();
+    await EventTicket.updateMany(
+      {
+        _id: { $in: issuedTickets.map((item) => item._id) },
+      },
+      {
+        $set: {
+          status: "cancelled",
+          cancelledAt: new Date(),
+          "paymentMetadata.initializeError":
+            error instanceof Error ? error.message : String(error),
+        },
+      },
+    );
     throw error;
   }
 
-  baseTicket.paymentReference = paymentAttempt.reference;
-  baseTicket.paymentAuthorizationUrl = paymentAttempt.authorizationUrl;
-  baseTicket.paymentAccessCode = paymentAttempt.accessCode;
-  baseTicket.paymentMetadata = {
-    ...(baseTicket.paymentMetadata || {}),
-    initializePayload: paymentAttempt.paystackInitializePayload,
-    paymentAttemptId: String(paymentAttempt._id),
-  };
-  await baseTicket.save();
+  await EventTicket.updateMany(
+    {
+      _id: { $in: issuedTickets.map((item) => item._id) },
+    },
+    {
+      $set: {
+        paymentAuthorizationUrl: paymentAttempt.authorizationUrl,
+        paymentAccessCode: paymentAttempt.accessCode,
+        "paymentMetadata.initializePayload": paymentAttempt.paystackInitializePayload,
+        "paymentMetadata.paymentAttemptId": String(paymentAttempt._id),
+        "paymentMetadata.pricingBreakdown": pricingBreakdown,
+      },
+    },
+  );
+
+  await EventTicket.updateOne(
+    { _id: primaryTicket._id },
+    {
+      $set: {
+        paymentReference: paymentAttempt.reference,
+      },
+    },
+  );
+
+  const refreshedPrimaryTicket = await EventTicket.findById(primaryTicket._id);
 
   return {
     requiresPayment: true,
-    ticket: baseTicket,
+    ticket: withClientTicketIdentity(refreshedPrimaryTicket || primaryTicket),
     payment: buildCheckoutPayment(paymentAttempt),
     paymentAttemptId: String(paymentAttempt._id),
     kind: "ticket_purchase",
+    pricingBreakdown: {
+      basePriceNaira: pricingBreakdown.basePriceNaira,
+      veraFeeNaira: pricingBreakdown.veraFeeNaira,
+      totalCheckoutNaira: pricingBreakdown.totalCheckoutNaira,
+      organizerNetNaira: pricingBreakdown.organizerNetNaira,
+      platformFeePercent: pricingBreakdown.platformFeePercent,
+      feeMode: pricingBreakdown.feeMode,
+    },
   };
 };
 
@@ -2493,17 +3320,18 @@ const verifyTicketPayment = async ({
     throw new ApiError(409, "This ticket does not require online payment verification");
   }
 
-  const paymentReference = String(reference || ticket.paymentReference || "").trim();
+  const paymentAttempt = await getPaymentAttemptForVerification({
+    reference,
+    ticketId: ticket._id,
+    kind: "ticket_purchase",
+  });
+  const paymentReference = String(
+    reference || ticket.paymentReference || paymentAttempt?.reference || "",
+  ).trim();
 
   if (!paymentReference) {
     throw new ApiError(400, "Payment reference is required for verification");
   }
-
-  const paymentAttempt = await getPaymentAttemptForVerification({
-    reference: paymentReference,
-    ticketId: ticket._id,
-    kind: "ticket_purchase",
-  });
 
   if (paymentAttempt?.fulfillmentStatus === "done") {
     if (ticket.status !== "paid" && ticket.status !== "used") {
@@ -2530,6 +3358,42 @@ const verifyTicketPayment = async ({
   const paidStatus = String(paymentData.status || "").toLowerCase();
 
   if (paidStatus !== "success") {
+    const shouldCancelPendingTickets = [
+      "abandoned",
+      "cancelled",
+      "canceled",
+      "failed",
+    ].includes(paidStatus);
+
+    if (shouldCancelPendingTickets) {
+      const now = new Date();
+      const purchaseBatchId = String(
+        ticket.paymentMetadata?.purchaseBatchId || "",
+      ).trim();
+
+      const cancelQuery = purchaseBatchId
+        ? {
+            eventId: ticket.eventId?._id || ticket.eventId,
+            buyerUserId: actorUserId,
+            status: "pending",
+            "paymentMetadata.purchaseBatchId": purchaseBatchId,
+          }
+        : {
+            _id: ticket._id,
+            buyerUserId: actorUserId,
+            status: "pending",
+          };
+
+      await EventTicket.updateMany(cancelQuery, {
+        $set: {
+          status: "cancelled",
+          cancelledAt: now,
+          "paymentMetadata.cancelReason": "checkout_cancelled_or_failed",
+          "paymentMetadata.cancelledAt": now.toISOString(),
+        },
+      });
+    }
+
     if (paymentAttempt) {
       paymentAttempt.status =
         paidStatus === "abandoned" ? "abandoned" : "failed";
@@ -2544,7 +3408,9 @@ const verifyTicketPayment = async ({
   }
 
   const amountKobo = Number(paymentData.amount || 0);
-  const expectedKobo = Math.round(Number(ticket.totalPriceNaira || 0) * 100);
+  const expectedKobo = Math.round(
+    Number(paymentAttempt?.amountKobo || Number(ticket.totalPriceNaira || 0) * 100),
+  );
 
   if (amountKobo < expectedKobo) {
     await markPaymentAttemptFulfillmentFailed({
@@ -2573,6 +3439,104 @@ const verifyTicketPayment = async ({
   };
 };
 
+const cancelTicketPayment = async ({
+  ticketId,
+  actorUserId,
+  reference,
+}) => {
+  const ticket = await EventTicket.findById(ticketId).populate("eventId");
+
+  if (!ticket) {
+    throw new ApiError(404, "Ticket not found");
+  }
+
+  if (String(ticket.buyerUserId) !== String(actorUserId)) {
+    throw new ApiError(403, "You can only cancel your own pending checkout");
+  }
+
+  if (ticket.status === "paid" || ticket.status === "used") {
+    return {
+      ticket: withClientTicketIdentity(ticket),
+      cancelled: false,
+      cancelledCount: 0,
+      reason: "already_completed",
+    };
+  }
+
+  if (ticket.status === "cancelled" || ticket.status === "expired") {
+    return {
+      ticket: withClientTicketIdentity(ticket),
+      cancelled: false,
+      cancelledCount: 0,
+      reason: "already_inactive",
+    };
+  }
+
+  const paymentAttempt = await getPaymentAttemptForVerification({
+    reference,
+    ticketId: ticket._id,
+    kind: "ticket_purchase",
+  });
+
+  if (
+    paymentAttempt?.status === "success" ||
+    paymentAttempt?.fulfillmentStatus === "done"
+  ) {
+    return {
+      ticket: withClientTicketIdentity(ticket),
+      cancelled: false,
+      cancelledCount: 0,
+      reason: "already_completed",
+    };
+  }
+
+  const now = new Date();
+  const purchaseBatchId = String(ticket.paymentMetadata?.purchaseBatchId || "").trim();
+  const cancelQuery = purchaseBatchId
+    ? {
+        eventId: ticket.eventId?._id || ticket.eventId,
+        buyerUserId: actorUserId,
+        status: "pending",
+        "paymentMetadata.purchaseBatchId": purchaseBatchId,
+      }
+    : {
+        _id: ticket._id,
+        buyerUserId: actorUserId,
+        status: "pending",
+      };
+
+  const cancelResult = await EventTicket.updateMany(cancelQuery, {
+    $set: {
+      status: "cancelled",
+      cancelledAt: now,
+      "paymentMetadata.cancelReason": "checkout_cancelled_by_user",
+      "paymentMetadata.cancelledAt": now.toISOString(),
+    },
+  });
+
+  if (paymentAttempt) {
+    paymentAttempt.status = "abandoned";
+    paymentAttempt.failureReason = "Checkout was cancelled by the buyer";
+    paymentAttempt.fulfillmentStatus =
+      paymentAttempt.fulfillmentStatus === "done"
+        ? "done"
+        : "failed";
+    await paymentAttempt.save();
+  }
+
+  const refreshedTicket = await EventTicket.findById(ticket._id).populate("eventId");
+
+  return {
+    ticket: withClientTicketIdentity(refreshedTicket || ticket),
+    cancelled: Number(cancelResult.modifiedCount || 0) > 0,
+    cancelledCount: Number(cancelResult.modifiedCount || 0),
+    reason:
+      Number(cancelResult.modifiedCount || 0) > 0
+        ? "cancelled"
+        : "no_pending_checkout",
+  };
+};
+
 const toCheckInWindow = (event, now) => {
   const startsAt = new Date(event.startsAt);
   const endsAt = new Date(event.endsAt);
@@ -2582,7 +3546,7 @@ const toCheckInWindow = (event, now) => {
     startsAt,
     endsAt,
   };
-  const earlyGraceMs = 3 * 60 * 60 * 1000;
+  const earlyGraceMs = 0;
   const lateGraceMs = 8 * 60 * 60 * 1000;
 
   return {
@@ -2651,8 +3615,8 @@ const checkInTicket = async ({ actorUserId, payload }) => {
 
   const ticket = await EventTicket.findOne(ticketQuery)
     .populate("eventId")
-    .populate("buyerUserId", "fullName email avatarUrl title")
-    .populate("usedByUserId", "fullName email avatarUrl title");
+    .populate("buyerUserId", "fullName email avatarUrl title verificationBadge")
+    .populate("usedByUserId", "fullName email avatarUrl title verificationBadge");
 
   if (!ticket) {
     throw new ApiError(404, "Ticket not found");
@@ -2707,7 +3671,8 @@ const checkInTicket = async ({ actorUserId, payload }) => {
   ticket.usedByUserId = actorUserId;
   ticket.verifiedAt = ticket.verifiedAt || now;
   await ticket.save();
-  await ticket.populate("usedByUserId", "fullName email avatarUrl title");
+  await ticket.populate("usedByUserId", "fullName email avatarUrl title verificationBadge");
+  await recomputeVerificationForEvent({ event });
 
   return {
     ticket,
@@ -2729,7 +3694,9 @@ const listMyTickets = async ({
     buyerUserId: actorUserId,
   };
 
-  if (status !== "all") {
+  if (status === "all") {
+    query.status = { $in: ["paid", "used"] };
+  } else {
     query.status = status;
   }
 
@@ -2768,13 +3735,13 @@ const listMyTickets = async ({
       .populate({
         path: "eventId",
         select:
-          "organizerUserId name imageUrl address latitude longitude geofenceRadiusMeters startsAt endsAt timezone isPaid ticketPriceNaira currency expectedTickets recurrence status createdAt updatedAt",
+          "organizerUserId name imageUrl address latitude longitude geofenceRadiusMeters startsAt endsAt timezone isPaid platformFeePercent feeMode ticketPriceNaira currency expectedTickets recurrence status createdAt updatedAt",
         populate: {
           path: "organizerUserId",
-          select: "fullName email avatarUrl title",
+          select: "fullName email avatarUrl title verificationBadge",
         },
       })
-      .populate("usedByUserId", "fullName email avatarUrl title")
+      .populate("usedByUserId", "fullName email avatarUrl title verificationBadge")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNumber)
@@ -2810,7 +3777,7 @@ const listMyTickets = async ({
   });
 
   return {
-    items: normalizedItems,
+    items: normalizedItems.map((ticket) => withClientTicketIdentity(ticket)),
     ...buildPaginationMeta({
       page: pageNumber,
       limit: limitNumber,
@@ -2866,14 +3833,14 @@ const listOrganizerTicketSales = async ({
       .populate({
         path: "eventId",
         select:
-          "organizerUserId name imageUrl address latitude longitude geofenceRadiusMeters startsAt endsAt timezone isPaid ticketPriceNaira currency expectedTickets recurrence status createdAt updatedAt",
+          "organizerUserId name imageUrl address latitude longitude geofenceRadiusMeters startsAt endsAt timezone isPaid platformFeePercent feeMode ticketPriceNaira currency expectedTickets recurrence status createdAt updatedAt",
         populate: {
           path: "organizerUserId",
-          select: "fullName email avatarUrl title",
+          select: "fullName email avatarUrl title verificationBadge",
         },
       })
-      .populate("buyerUserId", "fullName email avatarUrl title")
-      .populate("usedByUserId", "fullName email avatarUrl title")
+      .populate("buyerUserId", "fullName email avatarUrl title verificationBadge")
+      .populate("usedByUserId", "fullName email avatarUrl title verificationBadge")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNumber)
@@ -2909,7 +3876,7 @@ const listOrganizerTicketSales = async ({
   });
 
   return {
-    items: normalizedItems,
+    items: normalizedItems.map((ticket) => withClientTicketIdentity(ticket)),
     ...buildPaginationMeta({
       page: pageNumber,
       limit: limitNumber,
@@ -2999,7 +3966,7 @@ const listEventResaleMarketplace = async ({
   }
 
   return {
-    items,
+    items: items.map((ticket) => withClientTicketIdentity(ticket)),
     ...buildPaginationMeta({
       page: pageNumber,
       limit: limitNumber,
@@ -3126,7 +4093,7 @@ const listTicketResaleBids = async ({
 
   const [items, totalItems] = await Promise.all([
     TicketResaleBid.find(query)
-      .populate("bidderUserId", "fullName email avatarUrl title")
+      .populate("bidderUserId", "fullName email avatarUrl title verificationBadge")
       .sort({
         status: 1,
         amountNaira: -1,
@@ -3172,6 +4139,25 @@ const createTicketResaleBid = async ({ ticketId, actorUserId, payload }) => {
     throw new ApiError(400, "You already own this ticket");
   }
 
+  const event =
+    ticket.eventId && typeof ticket.eventId === "object"
+      ? ticket.eventId
+      : await Event.findById(ticket.eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  const salesWindow = resolveEventSalesWindowState(event, new Date());
+
+  if (salesWindow.state === "ended") {
+    throw new ApiError(409, "Resale is closed because this event has ended");
+  }
+
+  if (salesWindow.state === "started") {
+    throw new ApiError(409, "Resale closes once the event starts");
+  }
+
   const amountNaira = Math.max(1, Math.round(Number(payload.amountNaira || 0)));
   const maxBid = Math.max(1, Math.round(Number(ticket.resalePriceNaira || 0)));
 
@@ -3207,7 +4193,7 @@ const createTicketResaleBid = async ({ ticketId, actorUserId, payload }) => {
     });
   }
 
-  await bid.populate("bidderUserId", "fullName email avatarUrl title");
+  await bid.populate("bidderUserId", "fullName email avatarUrl title verificationBadge");
 
   const sellerUserId = toIdString(ticket.buyerUserId);
 
@@ -3246,7 +4232,7 @@ const acceptTicketResaleBid = async ({ ticketId, bidId, actorUserId }) => {
     _id: bidId,
     ticketId: ticket._id,
     status: "open",
-  }).populate("bidderUserId", "fullName email avatarUrl title");
+  }).populate("bidderUserId", "fullName email avatarUrl title verificationBadge");
 
   if (!bid) {
     throw new ApiError(404, "Bid not found");
@@ -3333,7 +4319,7 @@ const acceptTicketResaleBid = async ({ ticketId, bidId, actorUserId }) => {
 
   return TicketResaleBid.findById(bid._id).populate(
     "bidderUserId",
-    "fullName email avatarUrl title",
+    "fullName email avatarUrl title verificationBadge",
   );
 };
 
@@ -3344,7 +4330,7 @@ const rejectTicketResaleBid = async ({ ticketId, bidId, actorUserId }) => {
     _id: bidId,
     ticketId: ticket._id,
     status: "open",
-  }).populate("bidderUserId", "fullName email avatarUrl title");
+  }).populate("bidderUserId", "fullName email avatarUrl title verificationBadge");
 
   if (!bid) {
     throw new ApiError(404, "Bid not found");
@@ -3376,7 +4362,7 @@ const rejectTicketResaleBid = async ({ ticketId, bidId, actorUserId }) => {
 
   return TicketResaleBid.findById(bid._id).populate(
     "bidderUserId",
-    "fullName email avatarUrl title",
+    "fullName email avatarUrl title verificationBadge",
   );
 };
 
@@ -3417,6 +4403,25 @@ const purchaseResaleTicket = async ({
 
   if (!buyer) {
     throw new ApiError(404, "Buyer account not found");
+  }
+
+  const event =
+    ticket.eventId && typeof ticket.eventId === "object"
+      ? ticket.eventId
+      : await Event.findById(ticket.eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  const salesWindow = resolveEventSalesWindowState(event, new Date());
+
+  if (salesWindow.state === "ended") {
+    throw new ApiError(409, "Resale is closed because this event has ended");
+  }
+
+  if (salesWindow.state === "started") {
+    throw new ApiError(409, "Resale closes once the event starts");
   }
 
   let saleAmountNaira = Math.max(1, Math.round(Number(ticket.resalePriceNaira || 0)));
@@ -3686,6 +4691,16 @@ const initializeResalePurchase = async ({
 
   if (!event) {
     throw new ApiError(404, "Event not found");
+  }
+
+  const salesWindow = resolveEventSalesWindowState(event, new Date());
+
+  if (salesWindow.state === "ended") {
+    throw new ApiError(409, "Resale is closed because this event has ended");
+  }
+
+  if (salesWindow.state === "started") {
+    throw new ApiError(409, "Resale closes once the event starts");
   }
 
   const shouldBypassPaystack = !env.paystackSecretKey && env.paystackDevBypass;
@@ -4098,6 +5113,22 @@ const processPaystackWebhookEvent = async (payload) => {
       };
     }
 
+    if (paymentAttempt.kind === "premium_subscription") {
+      const subscription = await finalizePremiumSubscriptionPaymentAttempt({
+        paymentAttempt,
+        paymentData,
+      });
+
+      return {
+        processed: true,
+        event: eventName,
+        kind: "premium_subscription",
+        reference: paymentReference,
+        paymentAttemptId: String(paymentAttempt._id),
+        subscription,
+      };
+    }
+
     return {
       ignored: true,
       event: eventName,
@@ -4286,7 +5317,10 @@ const listEventRatings = async ({
   const pageNumber = Math.max(1, Number(page) || 1);
   const limitNumber = Math.min(50, Math.max(1, Number(limit) || 20));
   const event = await Event.findById(eventId)
-    .populate("organizerUserId", "fullName email avatarUrl title");
+    .populate(
+      "organizerUserId",
+      "fullName email avatarUrl title verificationBadge organizerBranding",
+    );
 
   if (!event) {
     throw new ApiError(404, "Event not found");
@@ -4298,7 +5332,7 @@ const listEventRatings = async ({
 
   const [items, totalItems, summaryRows, myRating] = await Promise.all([
     EventRating.find({ eventId })
-      .populate("userId", "fullName avatarUrl title")
+      .populate("userId", "fullName avatarUrl title verificationBadge")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNumber),
@@ -4393,7 +5427,7 @@ const rateEvent = async ({
       runValidators: true,
       setDefaultsOnInsert: true,
     },
-  ).populate("userId", "fullName avatarUrl title");
+  ).populate("userId", "fullName avatarUrl title verificationBadge");
 
   return rating;
 };
@@ -4491,13 +5525,13 @@ const EVENT_CHAT_DELETED_TEXT = "This message was deleted";
 
 const applyEventChatMessagePopulate = (query) =>
   query
-    .populate("userId", "fullName email avatarUrl title")
+    .populate("userId", "fullName email avatarUrl title verificationBadge")
     .populate({
       path: "replyToMessageId",
       select: "_id message messageType userId isDeleted deletedAt createdAt",
       populate: {
         path: "userId",
-        select: "fullName email avatarUrl title",
+        select: "fullName email avatarUrl title verificationBadge",
       },
     })
     .populate({
@@ -4505,7 +5539,7 @@ const applyEventChatMessagePopulate = (query) =>
       select: "_id message messageType userId isDeleted deletedAt createdAt",
       populate: {
         path: "userId",
-        select: "fullName email avatarUrl title",
+        select: "fullName email avatarUrl title verificationBadge",
       },
     });
 
@@ -4541,6 +5575,10 @@ const resolveEventChatTicketCard = async ({ eventId, ticketRef, actorUserId }) =
     throw new ApiError(403, "You cannot share this ticket");
   }
 
+  if (String(ticket.status || "").toLowerCase() === "pending") {
+    throw new ApiError(409, "Payment is still pending for this ticket");
+  }
+
   return {
     ticketId: String(ticket._id),
     ticketCode: ticket.ticketCode || "",
@@ -4560,7 +5598,7 @@ const resolveEventChatReplyPreview = async ({ eventId, replyToMessageId }) => {
     _id: replyId,
     eventId,
   })
-    .populate("userId", "fullName email avatarUrl title")
+    .populate("userId", "fullName email avatarUrl title verificationBadge")
     .select("_id message messageType userId isDeleted deletedAt");
 
   if (!message) {
@@ -4596,7 +5634,7 @@ const resolveEventChatForwardPreview = async ({
     _id: forwardedId,
     eventId,
   })
-    .populate("userId", "fullName email avatarUrl title")
+    .populate("userId", "fullName email avatarUrl title verificationBadge")
     .select("_id message messageType userId isDeleted deletedAt");
 
   if (!message) {
@@ -4718,7 +5756,7 @@ const listEventChatMessages = async ({
 const createEventChatMessage = async ({ eventId, actorUserId, payload }) => {
   const event = await Event.findById(eventId).populate(
     "organizerUserId",
-    "fullName email avatarUrl title",
+    "fullName email avatarUrl title verificationBadge",
   );
 
   if (!event) {
@@ -4900,8 +5938,8 @@ const listEventPosts = async ({
 
   const [items, totalItems] = await Promise.all([
     EventPost.find(query)
-      .populate("authorUserId", "fullName email avatarUrl title")
-      .populate("eventId", "name imageUrl address")
+      .populate("authorUserId", "fullName email avatarUrl title verificationBadge")
+      .populate("eventId", "name imageUrl address eventCenterId")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNumber),
@@ -4931,7 +5969,7 @@ const listEventPosts = async ({
 const createEventPost = async ({ eventId, actorUserId, payload }) => {
   const event = await Event.findById(eventId).populate(
     "organizerUserId",
-    "fullName email avatarUrl title",
+    "fullName email avatarUrl title verificationBadge",
   );
 
   if (!event) {
@@ -4958,8 +5996,8 @@ const createEventPost = async ({ eventId, actorUserId, payload }) => {
     visibility: payload.visibility || "public",
   });
 
-  await post.populate("authorUserId", "fullName email avatarUrl title");
-  await post.populate("eventId", "name imageUrl address");
+  await post.populate("authorUserId", "fullName email avatarUrl title verificationBadge");
+  await post.populate("eventId", "name imageUrl address eventCenterId");
 
   const organizerUserId = toIdString(event.organizerUserId);
 
@@ -5003,8 +6041,8 @@ const toggleEventPostLike = async ({ postId, actorUserId }) => {
     );
 
     const refreshed = await EventPost.findById(post._id)
-      .populate("authorUserId", "fullName email avatarUrl title")
-      .populate("eventId", "name imageUrl address");
+      .populate("authorUserId", "fullName email avatarUrl title verificationBadge")
+      .populate("eventId", "name imageUrl address eventCenterId");
 
     return {
       liked: false,
@@ -5023,8 +6061,8 @@ const toggleEventPostLike = async ({ postId, actorUserId }) => {
   await EventPost.updateOne({ _id: post._id }, { $inc: { likesCount: 1 } });
 
   const refreshed = await EventPost.findById(post._id)
-    .populate("authorUserId", "fullName email avatarUrl title")
-    .populate("eventId", "name imageUrl address");
+    .populate("authorUserId", "fullName email avatarUrl title verificationBadge")
+    .populate("eventId", "name imageUrl address eventCenterId");
 
   return {
     liked: true,
@@ -5053,7 +6091,7 @@ const listEventPostComments = async ({
 
   const [items, totalItems] = await Promise.all([
     EventPostComment.find({ postId: post._id })
-      .populate("userId", "fullName email avatarUrl title")
+      .populate("userId", "fullName email avatarUrl title verificationBadge")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNumber),
@@ -5102,7 +6140,7 @@ const createEventPostComment = async ({
     comment: commentText,
   });
 
-  await created.populate("userId", "fullName email avatarUrl title");
+  await created.populate("userId", "fullName email avatarUrl title verificationBadge");
   await EventPost.updateOne({ _id: post._id }, { $inc: { commentsCount: 1 } });
 
   if (toIdString(post.authorUserId) !== String(actorUserId)) {
@@ -5136,7 +6174,11 @@ const listEventFeed = async ({
   const pageNumber = Math.max(1, Number(page) || 1);
   const limitNumber = Math.min(50, Math.max(1, Number(limit) || 20));
   const skip = (pageNumber - 1) * limitNumber;
-  const query = {};
+  const query = {
+    createdAt: {
+      $gte: new Date(Date.now() - EVENT_MEMORY_RETENTION_MS),
+    },
+  };
 
   if (scope === "mine") {
     const [myEventRows, myTicketRows] = await Promise.all([
@@ -5205,14 +6247,15 @@ const listEventFeed = async ({
     EventPost.find(query)
       .populate({
         path: "eventId",
+        match: scope === "global" ? { status: "published" } : undefined,
         select:
-          "name imageUrl address status startsAt endsAt recurrence organizerUserId ticketPriceNaira isPaid expectedTickets pricing",
+          "name imageUrl address status startsAt endsAt recurrence organizerUserId ticketPriceNaira isPaid platformFeePercent feeMode expectedTickets pricing",
         populate: {
           path: "organizerUserId",
-          select: "fullName email avatarUrl title",
+          select: "fullName email avatarUrl title verificationBadge",
         },
       })
-      .populate("authorUserId", "fullName email avatarUrl title")
+      .populate("authorUserId", "fullName email avatarUrl title verificationBadge")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNumber),
@@ -5242,6 +6285,7 @@ const listEventFeed = async ({
 
 module.exports = {
   createEvent,
+  searchEventCenters,
   listEvents,
   listEventFeed,
   listMyEvents,
@@ -5265,6 +6309,7 @@ module.exports = {
   deleteEvent,
   initializeTicketPurchase,
   verifyTicketPayment,
+  cancelTicketPayment,
   checkInTicket,
   listMyTickets,
   listOrganizerTicketSales,
