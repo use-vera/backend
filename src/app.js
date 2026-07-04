@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
+const path = require("path");
 const routes = require("./routes");
 const paymentRoutes = require("./routes/payment.routes");
 const {
@@ -35,6 +36,7 @@ app.use("/api/payments", paymentRoutes);
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
+app.use("/uploads", express.static(path.resolve(__dirname, "..", "uploads")));
 
 app.get("/health", (_req, res) => {
   res.status(200).json({

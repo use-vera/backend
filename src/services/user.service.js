@@ -49,6 +49,7 @@ const normalizePreferences = (preferences = {}) => ({
     preferences.themePreference === "dark"
       ? preferences.themePreference
       : "system",
+  shareActivityWithFollowers: preferences.shareActivityWithFollowers !== false,
 });
 
 const resolveWorkspaceByRef = async (workspaceRef) => {
@@ -316,6 +317,11 @@ const updateUserPreferences = async (userId, payload) => {
 
   if (payload.themePreference !== undefined) {
     update["preferences.themePreference"] = payload.themePreference;
+  }
+
+  if (payload.shareActivityWithFollowers !== undefined) {
+    update["preferences.shareActivityWithFollowers"] =
+      payload.shareActivityWithFollowers;
   }
 
   if (Object.keys(update).length === 0) {

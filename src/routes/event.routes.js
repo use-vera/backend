@@ -10,6 +10,9 @@ const {
   updateEventSchema,
   listEventsQuerySchema,
   listFeaturedEventsQuerySchema,
+  featureAvailabilityQuerySchema,
+  initializeEventFeatureSchema,
+  verifyEventFeatureSchema,
   searchEventCentersQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
@@ -57,6 +60,9 @@ const {
   createEventController,
   listEventsController,
   listFeaturedEventsController,
+  getEventFeatureAvailabilityController,
+  initializeEventFeatureController,
+  verifyEventFeatureController,
   searchEventCentersController,
   listMyEventsController,
   getEventController,
@@ -124,6 +130,16 @@ router.get(
   "/featured",
   validateQuery(listFeaturedEventsQuerySchema),
   listFeaturedEventsController,
+);
+router.get(
+  "/feature-availability",
+  validateQuery(featureAvailabilityQuerySchema),
+  getEventFeatureAvailabilityController,
+);
+router.post(
+  "/feature/verify",
+  validateBody(verifyEventFeatureSchema),
+  verifyEventFeatureController,
 );
 router.get(
   "/centers/search",
@@ -384,6 +400,12 @@ router.post(
   validateParams(postIdParamsSchema),
   validateBody(createEventPostCommentSchema),
   createEventPostCommentController,
+);
+router.post(
+  "/:eventId/feature/initialize",
+  validateParams(eventIdParamsSchema),
+  validateBody(initializeEventFeatureSchema),
+  initializeEventFeatureController,
 );
 
 router.get("/:eventId", validateParams(eventIdParamsSchema), getEventController);

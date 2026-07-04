@@ -2,7 +2,7 @@ const asyncHandler = require("../utils/async-handler");
 const {
   createEvent,
   listEvents,
-  listFeaturedEvents,
+  listActiveFeaturedEventsForToday,
   searchEventCenters,
   listMyEvents,
   getEventById,
@@ -46,6 +46,11 @@ const {
   listEventPostComments,
   createEventPostComment,
 } = require("../services/event.service");
+const {
+  checkFeatureAvailability,
+  initializeEventFeature,
+  verifyEventFeature,
+} = require("../services/featured-event.service");
 const { emitEventChatMessageCreated } = require("../realtime/socket-broker");
 
 const createEventController = asyncHandler(async (req, res) => {
@@ -100,16 +105,57 @@ const listEventFeedController = asyncHandler(async (req, res) => {
 });
 
 const listFeaturedEventsController = asyncHandler(async (req, res) => {
-  const result = await listFeaturedEvents({
+  const result = await listActiveFeaturedEventsForToday({
     actorUserId: req.auth.userId,
     limit: req.query.limit,
-    workspaceId: req.query.workspaceId,
-    salePhase: req.query.salePhase,
   });
 
   res.status(200).json({
     success: true,
     message: "Featured events fetched",
+    data: result,
+  });
+});
+
+const getEventFeatureAvailabilityController = asyncHandler(async (req, res) => {
+  const result = await checkFeatureAvailability({
+    startDate: req.query.startDate,
+    days: req.query.days,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Feature availability fetched",
+    data: result,
+  });
+});
+
+const initializeEventFeatureController = asyncHandler(async (req, res) => {
+  const result = await initializeEventFeature({
+    actorUserId: req.auth.userId,
+    eventId: req.params.eventId,
+    startDate: req.body?.startDate,
+    days: req.body?.days,
+    callbackUrl: req.body?.callbackUrl,
+  });
+
+  res.status(201).json({
+    success: true,
+    message: "Feature checkout initialized",
+    data: result,
+  });
+});
+
+const verifyEventFeatureController = asyncHandler(async (req, res) => {
+  const result = await verifyEventFeature({
+    actorUserId: req.auth.userId,
+    reference: req.body?.reference,
+    paymentAttemptId: req.body?.paymentAttemptId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Feature payment verified",
     data: result,
   });
 });
@@ -722,6 +768,9 @@ module.exports = {
   listEventsController,
   listEventFeedController,
   listFeaturedEventsController,
+  getEventFeatureAvailabilityController,
+  initializeEventFeatureController,
+  verifyEventFeatureController,
   searchEventCentersController,
   listMyEventsController,
   getEventController,

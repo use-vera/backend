@@ -127,6 +127,13 @@ const userSchema = new Schema(
       maxlength: 280,
       default: "",
     },
+    state: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: "",
+      index: true,
+    },
     lastLoginAt: {
       type: Date,
     },
@@ -169,6 +176,10 @@ const userSchema = new Schema(
         type: String,
         enum: ["system", "light", "dark"],
         default: "system",
+      },
+      shareActivityWithFollowers: {
+        type: Boolean,
+        default: true,
       },
     },
     verificationBadge: {

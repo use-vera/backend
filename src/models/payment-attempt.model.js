@@ -21,6 +21,7 @@ const paymentAttemptSchema = new Schema(
         "ticket_purchase",
         "ticket_resale_purchase",
         "premium_subscription",
+        "event_feature",
       ],
       required: true,
       index: true,

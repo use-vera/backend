@@ -14,6 +14,9 @@ const {
 const {
   startEventCampaignMonitor,
 } = require("./services/event-premium.service");
+const {
+  startFeaturedSlotMonitor,
+} = require("./services/featured-slot-monitor.service");
 const { initializeSocketServer } = require("./realtime/socket");
 
 const startServer = async () => {
@@ -32,6 +35,7 @@ const startServer = async () => {
       startTicketTodoReminderMonitor();
       startTicketResaleMonitor();
       startEventCampaignMonitor();
+      startFeaturedSlotMonitor();
     });
   } catch (error) {
     // eslint-disable-next-line no-console

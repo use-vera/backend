@@ -276,6 +276,13 @@ const eventSchema = new Schema(
       trim: true,
       maxlength: 300,
     },
+    state: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: "",
+      index: true,
+    },
     latitude: {
       type: Number,
       required: true,

@@ -138,6 +138,7 @@ const createEventSchema = z
     description: z.string().trim().max(1200).optional(),
     imageUrl: z.string().trim().max(600).optional(),
     address: z.string().trim().min(2).max(300),
+    state: z.string().trim().max(80).optional(),
     latitude: z.number().min(-90).max(90),
     longitude: z.number().min(-180).max(180),
     geofenceRadiusMeters: z
@@ -355,6 +356,7 @@ const updateEventSchema = z
     description: z.string().trim().max(1200).optional(),
     imageUrl: z.string().trim().max(600).optional(),
     address: z.string().trim().min(2).max(300).optional(),
+    state: z.string().trim().max(80).optional(),
     latitude: z.number().min(-90).max(90).optional(),
     longitude: z.number().min(-180).max(180).optional(),
     geofenceRadiusMeters: z.coerce.number().int().min(20).max(10000).optional(),
@@ -398,6 +400,31 @@ const listFeaturedEventsQuerySchema = z.object({
   workspaceId: workspaceRefSchema.optional(),
   salePhase: z.enum(["all", "main", "presale"]).optional().default("main"),
 });
+
+const featureAvailabilityQuerySchema = z.object({
+  startDate: dateStringSchema,
+  days: z.coerce.number().int().min(1).max(30).optional().default(1),
+});
+
+const initializeEventFeatureSchema = z.object({
+  startDate: dateStringSchema,
+  days: z.coerce.number().int().min(1).max(30).optional().default(1),
+  callbackUrl: z.string().trim().max(500).optional(),
+});
+
+const verifyEventFeatureSchema = z
+  .object({
+    reference: z.string().trim().min(1).max(120).optional(),
+    paymentAttemptId: z
+      .string()
+      .trim()
+      .regex(/^[a-fA-F0-9]{24}$/, "Payment attempt ID must be valid")
+      .optional(),
+  })
+  .refine((value) => Boolean(value.reference || value.paymentAttemptId), {
+    message: "Provide payment reference or paymentAttemptId",
+    path: ["reference"],
+  });
 
 const searchEventCentersQuerySchema = z.object({
   query: z.string().trim().min(1).max(160),
@@ -610,6 +637,9 @@ module.exports = {
   updateEventSchema,
   listEventsQuerySchema,
   listFeaturedEventsQuerySchema,
+  featureAvailabilityQuerySchema,
+  initializeEventFeatureSchema,
+  verifyEventFeatureSchema,
   searchEventCentersQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,

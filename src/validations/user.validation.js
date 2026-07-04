@@ -16,6 +16,7 @@ const updateProfileSchema = z
     phoneNumber: z.string().trim().max(32).optional(),
     title: z.string().trim().max(120).optional(),
     bio: z.string().trim().max(280).optional(),
+    state: z.string().trim().max(80).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one field is required",
@@ -34,6 +35,7 @@ const updatePreferencesSchema = z
     quietCheckIn: z.boolean().optional(),
     weeklyDigest: z.boolean().optional(),
     themePreference: z.enum(["system", "light", "dark"]).optional(),
+    shareActivityWithFollowers: z.boolean().optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one preferences field is required",

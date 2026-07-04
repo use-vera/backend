@@ -15,8 +15,12 @@ const PaymentAttempt = require("../models/payment-attempt.model");
 const Membership = require("../models/membership.model");
 const Workspace = require("../models/workspace.model");
 const User = require("../models/user.model");
+const Follow = require("../models/follow.model");
+const EventView = require("../models/event-view.model");
+const FeaturedEventSlot = require("../models/featured-event-slot.model");
 const { normalizeMessagePayload } = require("../utils/chat-content");
 const { createNotification } = require("./notification.service");
+const { getFollowStatus } = require("./follow.service");
 const {
   generatePaystackReference,
   initializePaystackTransaction,
@@ -38,6 +42,10 @@ const {
 const {
   finalizePremiumSubscriptionPaymentAttempt,
 } = require("./subscription.service");
+const {
+  todayDateKey,
+  finalizeEventFeaturePaymentAttempt,
+} = require("./featured-event.service");
 const { resolveBranding } = require("./event-premium.service");
 const env = require("../config/env");
 
@@ -665,59 +673,110 @@ const getMyTicketMap = async (eventIds, userId) => {
   return map;
 };
 
-const getCoworkerTicketCountMap = async ({ eventIds, actorUserId }) => {
+const getFollowingInterestMap = async ({ eventIds, actorUserId }) => {
   if (!eventIds.length || !actorUserId) {
     return new Map();
   }
 
-  const memberships = await Membership.find({
-    userId: actorUserId,
-    status: "active",
-  })
-    .select("workspaceId")
-    .limit(1200)
-    .lean();
-  const workspaceIds = memberships.map((item) => item.workspaceId);
-
-  if (!workspaceIds.length) {
-    return new Map();
-  }
-
-  const coworkerRows = await Membership.find({
-    workspaceId: { $in: workspaceIds },
-    status: "active",
-  })
-    .select("userId")
+  const followingRows = await Follow.find({ followerUserId: actorUserId })
+    .select("followingUserId")
     .limit(5000)
     .lean();
 
-  const coworkerIds = [...new Set(
-    coworkerRows
-      .map((row) => String(row.userId))
-      .filter((value) => objectIdRegex.test(value) && value !== String(actorUserId)),
+  const followingIds = [...new Set(
+    followingRows
+      .map((row) => String(row.followingUserId))
+      .filter((value) => objectIdRegex.test(value)),
   )];
 
-  if (!coworkerIds.length) {
+  if (!followingIds.length) {
     return new Map();
   }
 
-  const rows = await EventTicket.aggregate([
-    {
-      $match: {
-        eventId: { $in: eventIds },
-        buyerUserId: { $in: toObjectIds(coworkerIds) },
-        status: { $in: ["pending", "paid", "used"] },
+  // Privacy: only count followees who haven't opted out of sharing their
+  // activity with people who follow them.
+  const visibleUsers = await User.find({
+    _id: { $in: toObjectIds(followingIds) },
+    "preferences.shareActivityWithFollowers": { $ne: false },
+  })
+    .select("_id")
+    .lean();
+  const visibleIds = toObjectIds(visibleUsers.map((user) => String(user._id)));
+
+  if (!visibleIds.length) {
+    return new Map();
+  }
+
+  const mergeDistinctUserRows = (map, rows) => {
+    for (const row of rows) {
+      const key = String(row._id);
+      const existing = map.get(key) || new Set();
+
+      for (const userId of row.userIds || []) {
+        existing.add(String(userId));
+      }
+
+      map.set(key, existing);
+    }
+  };
+
+  const [ticketRows, bidRows, resaleBuyerRows, viewRows] = await Promise.all([
+    EventTicket.aggregate([
+      {
+        $match: {
+          eventId: { $in: eventIds },
+          buyerUserId: { $in: visibleIds },
+          status: { $in: ["pending", "paid", "used"] },
+        },
       },
-    },
-    {
-      $group: {
-        _id: "$eventId",
-        quantity: { $sum: "$quantity" },
+      { $group: { _id: "$eventId", userIds: { $addToSet: "$buyerUserId" } } },
+    ]),
+    TicketResaleBid.aggregate([
+      {
+        $match: {
+          eventId: { $in: eventIds },
+          bidderUserId: { $in: visibleIds },
+        },
       },
-    },
+      { $group: { _id: "$eventId", userIds: { $addToSet: "$bidderUserId" } } },
+    ]),
+    EventTicket.aggregate([
+      {
+        $match: {
+          eventId: { $in: eventIds },
+          resaleBuyerUserId: { $in: visibleIds },
+        },
+      },
+      {
+        $group: {
+          _id: "$eventId",
+          userIds: { $addToSet: "$resaleBuyerUserId" },
+        },
+      },
+    ]),
+    EventView.aggregate([
+      {
+        $match: {
+          eventId: { $in: eventIds },
+          userId: { $in: visibleIds },
+        },
+      },
+      { $group: { _id: "$eventId", userIds: { $addToSet: "$userId" } } },
+    ]),
   ]);
 
-  return new Map(rows.map((row) => [String(row._id), Number(row.quantity || 0)]));
+  const userSetsByEvent = new Map();
+  mergeDistinctUserRows(userSetsByEvent, ticketRows);
+  mergeDistinctUserRows(userSetsByEvent, bidRows);
+  mergeDistinctUserRows(userSetsByEvent, resaleBuyerRows);
+  mergeDistinctUserRows(userSetsByEvent, viewRows);
+
+  return new Map(
+    [...userSetsByEvent.entries()].map(([eventId, userIdSet]) => [
+      eventId,
+      userIdSet.size,
+    ]),
+  );
 };
 
 const getDynamicTicketPricing = ({ event, occurrence, soldTickets, pendingTickets, now }) => {
@@ -821,7 +880,7 @@ const mapEventForResponse = ({
   myTicket,
   ratings,
   organizerBadge,
-  coworkerTicketCount = 0,
+  followingInterestCount = 0,
   now = new Date(),
 }) => {
   const salePhase = resolveEventSalePhase(event, now);
@@ -872,7 +931,7 @@ const mapEventForResponse = ({
     currentTicketPriceNaira: dynamicPricing.currentTicketPriceNaira,
     pricingInsight: dynamicPricing.pricingInsight,
     organizerBadge: organizerBadge || null,
-    friendsGoingCount: Number(coworkerTicketCount || 0),
+    friendsGoingCount: Number(followingInterestCount || 0),
     myRating:
       ratings?.myRating !== null && ratings?.myRating !== undefined
         ? Number(ratings.myRating)
@@ -1175,6 +1234,7 @@ const createEvent = async ({ actorUserId, payload }) => {
     description: payload.description || "",
     imageUrl: payload.imageUrl || "",
     address: payload.address,
+    state: payload.state || "",
     latitude: payload.latitude,
     longitude: payload.longitude,
     geofenceRadiusMeters: payload.geofenceRadiusMeters,
@@ -1293,13 +1353,13 @@ const listEvents = async ({
   const organizerIds = paged.map((item) =>
     toIdString(item.event.organizerUserId),
   );
-  const [statsMap, myTicketMap, ratingsMap, organizerBadgeMap, coworkerTicketMap] =
+  const [statsMap, myTicketMap, ratingsMap, organizerBadgeMap, followingInterestMap] =
     await Promise.all([
       getEventTicketStatsMap(eventIds),
       getMyTicketMap(eventIds, actorUserId),
       getEventRatingsSummaryMap(eventIds, actorUserId),
       getOrganizerVerificationMap(organizerIds),
-      getCoworkerTicketCountMap({ eventIds, actorUserId }),
+      getFollowingInterestMap({ eventIds, actorUserId }),
     ]);
 
   const items = paged.map((entry) => {
@@ -1312,7 +1372,7 @@ const listEvents = async ({
       ratings: ratingsMap.get(key),
       myTicket: myTicketMap.get(key),
       organizerBadge: organizerBadgeMap.get(toIdString(entry.event.organizerUserId)),
-      coworkerTicketCount: coworkerTicketMap.get(key) || 0,
+      followingInterestCount: followingInterestMap.get(key) || 0,
       now,
     });
   });
@@ -1369,12 +1429,12 @@ const listMyEvents = async ({
   await refreshEventCentersForEvents(events);
   const eventIds = events.map((event) => event._id);
   const organizerIds = events.map((event) => toIdString(event.organizerUserId));
-  const [statsMap, ratingsMap, organizerBadgeMap, coworkerTicketMap] =
+  const [statsMap, ratingsMap, organizerBadgeMap, followingInterestMap] =
     await Promise.all([
       getEventTicketStatsMap(eventIds),
       getEventRatingsSummaryMap(eventIds, actorUserId),
       getOrganizerVerificationMap(organizerIds),
-      getCoworkerTicketCountMap({ eventIds, actorUserId }),
+      getFollowingInterestMap({ eventIds, actorUserId }),
     ]);
 
   const items = events.map((event) => {
@@ -1390,7 +1450,7 @@ const listMyEvents = async ({
       ratings: ratingsMap.get(String(event._id)),
       myTicket: null,
       organizerBadge: organizerBadgeMap.get(toIdString(event.organizerUserId)),
-      coworkerTicketCount: coworkerTicketMap.get(String(event._id)) || 0,
+      followingInterestCount: followingInterestMap.get(String(event._id)) || 0,
       now,
     });
   });
@@ -2418,13 +2478,13 @@ const listFeaturedEvents = async ({
   const organizerIds = phaseFiltered.map((item) =>
     toIdString(item.event.organizerUserId),
   );
-  const [statsMap, ratingsMap, myTicketMap, organizerBadgeMap, coworkerTicketMap] =
+  const [statsMap, ratingsMap, myTicketMap, organizerBadgeMap, followingInterestMap] =
     await Promise.all([
       getEventTicketStatsMap(eventIds),
       getEventRatingsSummaryMap(eventIds, actorUserId),
       getMyTicketMap(eventIds, actorUserId),
       getOrganizerVerificationMap(organizerIds),
-      getCoworkerTicketCountMap({ eventIds, actorUserId }),
+      getFollowingInterestMap({ eventIds, actorUserId }),
     ]);
 
   const scored = phaseFiltered.map((entry) => {
@@ -2436,7 +2496,7 @@ const listFeaturedEvents = async ({
       ratings: ratingsMap.get(key),
       myTicket: myTicketMap.get(key),
       organizerBadge: organizerBadgeMap.get(toIdString(entry.event.organizerUserId)),
-      coworkerTicketCount: coworkerTicketMap.get(key) || 0,
+      followingInterestCount: followingInterestMap.get(key) || 0,
       now,
     });
 
@@ -2459,6 +2519,83 @@ const listFeaturedEvents = async ({
   scored.sort((a, b) => b.score - a.score);
 
   return scored.slice(0, safeLimit).map((entry) => entry.item);
+};
+
+// Real "Featured events" section: only events an organizer paid to feature
+// for today show up here. No trending fallback — if nobody paid, this is
+// empty (the algorithmic `listFeaturedEvents` above stays in use elsewhere,
+// e.g. the "related events" carousel on an event's detail page).
+const listActiveFeaturedEventsForToday = async ({ actorUserId, limit = 8 }) => {
+  const safeLimit = Math.min(20, Math.max(1, Number(limit) || 8));
+  const today = todayDateKey();
+
+  const slots = await FeaturedEventSlot.find({
+    date: today,
+    status: "active",
+  })
+    .sort({ createdAt: 1 })
+    .limit(50);
+
+  const eventIds = [...new Set(slots.map((slot) => String(slot.eventId)))];
+
+  if (!eventIds.length) {
+    return [];
+  }
+
+  const rawEvents = await Event.find({
+    _id: { $in: eventIds },
+    status: "published",
+  })
+    .populate(
+      "organizerUserId",
+      "fullName email avatarUrl title verificationBadge organizerBranding",
+    )
+    .populate("workspaceId", "name slug")
+    .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt");
+
+  const now = new Date();
+  const filtered = applyEventFilters({
+    events: rawEvents,
+    now,
+    filter: "upcoming",
+    sort: "dateAsc",
+  });
+
+  await refreshEventCentersForEvents(filtered.map((entry) => entry.event));
+
+  const filteredEventIds = filtered.map((item) => item.event._id);
+  const organizerIds = filtered.map((item) => toIdString(item.event.organizerUserId));
+  const [statsMap, ratingsMap, myTicketMap, organizerBadgeMap, followingInterestMap] =
+    await Promise.all([
+      getEventTicketStatsMap(filteredEventIds),
+      getEventRatingsSummaryMap(filteredEventIds, actorUserId),
+      getMyTicketMap(filteredEventIds, actorUserId),
+      getOrganizerVerificationMap(organizerIds),
+      getFollowingInterestMap({ eventIds: filteredEventIds, actorUserId }),
+    ]);
+
+  const mapped = filtered.map((entry) => {
+    const key = String(entry.event._id);
+
+    return mapEventForResponse({
+      event: entry.event,
+      occurrence: entry.occurrence,
+      stats: statsMap.get(key),
+      ratings: ratingsMap.get(key),
+      myTicket: myTicketMap.get(key),
+      organizerBadge: organizerBadgeMap.get(toIdString(entry.event.organizerUserId)),
+      followingInterestCount: followingInterestMap.get(key) || 0,
+      now,
+    });
+  });
+
+  // Preserve slot purchase order (first-purchased shown first).
+  const orderIndex = new Map(eventIds.map((id, index) => [id, index]));
+  mapped.sort(
+    (a, b) => (orderIndex.get(String(a._id)) ?? 0) - (orderIndex.get(String(b._id)) ?? 0),
+  );
+
+  return mapped.slice(0, safeLimit);
 };
 
 const buildOrganizerProfile = async ({ event, actorUserId, now }) => {
@@ -2540,6 +2677,11 @@ const buildOrganizerProfile = async ({ event, actorUserId, now }) => {
     .filter((item) => new Date(item.nextOccurrenceEndsAt).getTime() < now.getTime())
     .slice(0, 6);
 
+  const follow = await getFollowStatus({
+    actorUserId,
+    targetUserId: organizerId,
+  });
+
   return {
     user: organizerUser,
     badge: organizerBadgeMap.get(organizerId) || null,
@@ -2547,6 +2689,9 @@ const buildOrganizerProfile = async ({ event, actorUserId, now }) => {
     totalAttendees: Number(attendeesRows[0]?.quantity || 0),
     upcomingHostedEvents,
     previousHostedEvents,
+    isFollowedByMe: follow.isFollowing,
+    followersCount: follow.followersCount,
+    followingCount: follow.followingCount,
   };
 };
 
@@ -2584,6 +2729,10 @@ const getOrganizerProfileById = async ({
   const organizerBadgeMap = await getOrganizerVerificationMap([
     String(organizer._id),
   ]);
+  const follow = await getFollowStatus({
+    actorUserId,
+    targetUserId: String(organizer._id),
+  });
 
   return {
     user: organizer,
@@ -2592,6 +2741,9 @@ const getOrganizerProfileById = async ({
     totalAttendees: 0,
     upcomingHostedEvents: [],
     previousHostedEvents: [],
+    isFollowedByMe: follow.isFollowing,
+    followersCount: follow.followersCount,
+    followingCount: follow.followingCount,
   };
 };
 
@@ -2611,13 +2763,24 @@ const getEventById = async ({ eventId, actorUserId }) => {
   await ensureEventCanBeViewedBy(event, actorUserId);
   await refreshEventCentersForEvents([event]);
 
+  if (actorUserId) {
+    // Fire-and-forget: records only "has viewed", not a timestamped trail,
+    // and only feeds the following-interest signal for people who follow
+    // this viewer — never exposed as a per-view log to anyone.
+    void EventView.findOneAndUpdate(
+      { userId: actorUserId, eventId: event._id },
+      { $set: { viewedAt: new Date() } },
+      { upsert: true },
+    ).catch(() => null);
+  }
+
   const now = new Date();
   const occurrence = resolveOccurrenceWindow(event, now) || {
     startsAt: new Date(event.startsAt),
     endsAt: new Date(event.endsAt),
   };
 
-  const [statsMap, ratingsMap, myTickets, ratingsPreview, organizerProfile, featuredEvents, organizerBadgeMap, coworkerTicketMap] =
+  const [statsMap, ratingsMap, myTickets, ratingsPreview, organizerProfile, featuredEvents, organizerBadgeMap, followingInterestMap] =
     await Promise.all([
       getEventTicketStatsMap([event._id]),
       getEventRatingsSummaryMap([event._id], actorUserId),
@@ -2646,7 +2809,7 @@ const getEventById = async ({ eventId, actorUserId }) => {
           : undefined,
       }),
       getOrganizerVerificationMap([toIdString(event.organizerUserId)]),
-      getCoworkerTicketCountMap({ eventIds: [event._id], actorUserId }),
+      getFollowingInterestMap({ eventIds: [event._id], actorUserId }),
     ]);
 
   const mappedEvent = mapEventForResponse({
@@ -2656,7 +2819,7 @@ const getEventById = async ({ eventId, actorUserId }) => {
     ratings: ratingsMap.get(String(event._id)),
     myTicket: myTickets[0] || null,
     organizerBadge: organizerBadgeMap.get(toIdString(event.organizerUserId)),
-    coworkerTicketCount: coworkerTicketMap.get(String(event._id)) || 0,
+    followingInterestCount: followingInterestMap.get(String(event._id)) || 0,
     now,
   });
 
@@ -5129,6 +5292,21 @@ const processPaystackWebhookEvent = async (payload) => {
       };
     }
 
+    if (paymentAttempt.kind === "event_feature") {
+      await finalizeEventFeaturePaymentAttempt({
+        paymentAttempt,
+        paymentData,
+      });
+
+      return {
+        processed: true,
+        event: eventName,
+        kind: "event_feature",
+        reference: paymentReference,
+        paymentAttemptId: String(paymentAttempt._id),
+      };
+    }
+
     return {
       ignored: true,
       event: eventName,
@@ -6290,6 +6468,7 @@ module.exports = {
   listEventFeed,
   listMyEvents,
   listFeaturedEvents,
+  listActiveFeaturedEventsForToday,
   getEventById,
   getOrganizerProfileById,
   listEventRatings,
