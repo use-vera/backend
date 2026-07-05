@@ -546,6 +546,7 @@ const createEventPostSchema = z.object({
   type: z.enum(["photo", "update"]).optional().default("photo"),
   caption: z.string().trim().max(800).optional().default(""),
   imageUrl: z.string().trim().max(600).optional().default(""),
+  mediaUrls: z.array(z.string().trim().max(600)).max(10).optional().default([]),
   visibility: z.enum(["public", "ticket-holders"]).optional().default("public"),
 });
 

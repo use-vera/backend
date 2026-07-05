@@ -6158,10 +6158,13 @@ const createEventPost = async ({ eventId, actorUserId, payload }) => {
   await ensureEventParticipant({ event, actorUserId });
 
   const caption = String(payload.caption || "").trim();
-  const imageUrl = String(payload.imageUrl || "").trim();
+  const mediaUrls = Array.isArray(payload.mediaUrls)
+    ? payload.mediaUrls.map((url) => String(url || "").trim()).filter(Boolean)
+    : [];
+  const imageUrl = mediaUrls[0] || String(payload.imageUrl || "").trim();
 
-  if (!caption && !imageUrl) {
-    throw new ApiError(400, "Add a caption or image to create a post");
+  if (!caption && !mediaUrls.length && !imageUrl) {
+    throw new ApiError(400, "Add a caption or media to create a post");
   }
 
   const post = await EventPost.create({
@@ -6171,6 +6174,7 @@ const createEventPost = async ({ eventId, actorUserId, payload }) => {
     type: payload.type || "photo",
     caption,
     imageUrl,
+    mediaUrls: mediaUrls.length ? mediaUrls : imageUrl ? [imageUrl] : [],
     visibility: payload.visibility || "public",
   });
 

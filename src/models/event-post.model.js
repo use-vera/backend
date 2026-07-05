@@ -36,6 +36,10 @@ const eventPostSchema = new Schema(
       trim: true,
       default: "",
     },
+    mediaUrls: {
+      type: [{ type: String, trim: true }],
+      default: [],
+    },
     likesCount: {
       type: Number,
       min: 0,
