@@ -170,68 +170,6 @@ const ticketCategorySchema = new Schema(
   },
 );
 
-const brandingSchema = new Schema(
-  {
-    useOrganizerDefault: {
-      type: Boolean,
-      default: true,
-    },
-    overrideEnabled: {
-      type: Boolean,
-      default: false,
-    },
-    displayName: {
-      type: String,
-      trim: true,
-      maxlength: 120,
-      default: "",
-    },
-    tagline: {
-      type: String,
-      trim: true,
-      maxlength: 180,
-      default: "",
-    },
-    logoUrl: {
-      type: String,
-      trim: true,
-      default: "",
-    },
-    bannerUrl: {
-      type: String,
-      trim: true,
-      default: "",
-    },
-    primaryColor: {
-      type: String,
-      trim: true,
-      maxlength: 24,
-      default: "",
-    },
-    accentColor: {
-      type: String,
-      trim: true,
-      maxlength: 24,
-      default: "",
-    },
-    headerStyle: {
-      type: String,
-      enum: ["soft", "bold"],
-      default: "soft",
-    },
-    ticketStyle: {
-      type: String,
-      enum: ["classic", "branded"],
-      default: "classic",
-    },
-    updatedAt: {
-      type: Date,
-      default: null,
-    },
-  },
-  { _id: false },
-);
-
 const eventSchema = new Schema(
   {
     organizerUserId: {
@@ -384,22 +322,6 @@ const eventSchema = new Schema(
         presaleEndsAt: null,
         presaleQuantity: 0,
         presalePriceNaira: 0,
-      }),
-    },
-    branding: {
-      type: brandingSchema,
-      default: () => ({
-        useOrganizerDefault: true,
-        overrideEnabled: false,
-        displayName: "",
-        tagline: "",
-        logoUrl: "",
-        bannerUrl: "",
-        primaryColor: "",
-        accentColor: "",
-        headerStyle: "soft",
-        ticketStyle: "classic",
-        updatedAt: null,
       }),
     },
     status: {

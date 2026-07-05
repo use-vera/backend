@@ -103,11 +103,6 @@ const env = {
     process.env.TICKET_RESALE_MONITOR_TICK_MS,
     5 * 60 * 1000,
   ),
-  eventCampaignEnabled: toBoolean(process.env.EVENT_CAMPAIGN_ENABLED, true),
-  eventCampaignTickMs: toNumber(
-    process.env.EVENT_CAMPAIGN_TICK_MS,
-    60 * 1000,
-  ),
   eventMemoryRetentionDays: toNumber(
     process.env.EVENT_MEMORY_RETENTION_DAYS,
     14,

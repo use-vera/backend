@@ -46,7 +46,6 @@ const {
   todayDateKey,
   finalizeEventFeaturePaymentAttempt,
 } = require("./featured-event.service");
-const { resolveBranding } = require("./event-premium.service");
 const env = require("../config/env");
 
 const roleWeight = {
@@ -488,16 +487,25 @@ const applyEventFilters = ({
 
   let monthRangeStart = null;
   let monthRangeEnd = null;
+  let weekRangeStart = null;
+  let weekRangeEnd = null;
 
   if (filter === "this-month") {
     monthRangeStart = new Date(now.getFullYear(), now.getMonth(), 1);
     monthRangeEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
   }
 
+  if (filter === "this-week") {
+    weekRangeStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    weekRangeEnd = new Date(weekRangeStart);
+    weekRangeEnd.setDate(weekRangeEnd.getDate() + 7);
+    weekRangeEnd.setHours(23, 59, 59, 999);
+  }
+
   const filtered = [];
 
   for (const event of events) {
-    const referenceAt = rangeStart || monthRangeStart || now;
+    const referenceAt = rangeStart || monthRangeStart || weekRangeStart || now;
     const occurrence = resolveOccurrenceWindow(event, referenceAt);
 
     if (!occurrence) {
@@ -510,6 +518,12 @@ const applyEventFilters = ({
 
     if (monthRangeStart && monthRangeEnd) {
       if (occurrence.startsAt > monthRangeEnd || occurrence.endsAt < monthRangeStart) {
+        continue;
+      }
+    }
+
+    if (weekRangeStart && weekRangeEnd) {
+      if (occurrence.startsAt > weekRangeEnd || occurrence.endsAt < weekRangeStart) {
         continue;
       }
     }
@@ -901,13 +915,6 @@ const mapEventForResponse = ({
   return {
     ...event.toJSON(),
     eventCenter: mapEventCenterForResponse(event),
-    resolvedBranding: resolveBranding({
-      organizerBranding:
-        event?.organizerUserId && typeof event.organizerUserId === "object"
-          ? event.organizerUserId.organizerBranding
-          : null,
-      eventBranding: event?.branding || {},
-    }),
     nextOccurrenceAt: occurrence.startsAt.toISOString(),
     nextOccurrenceEndsAt: occurrence.endsAt.toISOString(),
     soldTickets,
@@ -1252,12 +1259,6 @@ const createEvent = async ({ actorUserId, payload }) => {
     pricing: payload.pricing || undefined,
     resale: payload.resale || undefined,
     sales,
-    branding: payload.branding
-      ? {
-          ...payload.branding,
-          updatedAt: new Date(),
-        }
-      : undefined,
     status: payload.status || "published",
   });
 
@@ -1281,6 +1282,7 @@ const listEvents = async ({
   ticketType = "all",
   workspaceId,
   salePhase = "main",
+  state,
 }) => {
   const query = {
     status: "published",
@@ -1299,6 +1301,12 @@ const listEvents = async ({
     query.isPaid = true;
   }
 
+  const trimmedState = String(state || "").trim();
+
+  if (trimmedState) {
+    query.state = new RegExp(`^${escapeRegex(trimmedState)}$`, "i");
+  }
+
   const trimmedSearch = String(search || "").trim();
 
   if (trimmedSearch) {
@@ -1313,7 +1321,7 @@ const listEvents = async ({
   const rawItems = await Event.find(query)
     .populate(
       "organizerUserId",
-      "fullName email avatarUrl title verificationBadge organizerBranding",
+      "fullName email avatarUrl title verificationBadge",
     )
     .populate("workspaceId", "name slug")
     .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt")
@@ -1415,7 +1423,7 @@ const listMyEvents = async ({
     Event.find(query)
       .populate(
         "organizerUserId",
-        "fullName email avatarUrl title verificationBadge organizerBranding",
+        "fullName email avatarUrl title verificationBadge",
       )
       .populate("workspaceId", "name slug")
     .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt")
@@ -2442,7 +2450,7 @@ const listFeaturedEvents = async ({
   const rawItems = await Event.find(query)
     .populate(
       "organizerUserId",
-      "fullName email avatarUrl title verificationBadge organizerBranding",
+      "fullName email avatarUrl title verificationBadge",
     )
     .populate("workspaceId", "name slug")
     .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt")
@@ -2548,7 +2556,7 @@ const listActiveFeaturedEventsForToday = async ({ actorUserId, limit = 8 }) => {
   })
     .populate(
       "organizerUserId",
-      "fullName email avatarUrl title verificationBadge organizerBranding",
+      "fullName email avatarUrl title verificationBadge",
     )
     .populate("workspaceId", "name slug")
     .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt");
@@ -2609,7 +2617,7 @@ const buildOrganizerProfile = async ({ event, actorUserId, now }) => {
     typeof event.organizerUserId === "object"
       ? event.organizerUserId
       : await User.findById(organizerId).select(
-          "fullName email avatarUrl title verificationBadge organizerBranding",
+          "fullName email avatarUrl title verificationBadge",
         );
 
   const [hostedEventsCount, attendeesRows, organizerEvents] = await Promise.all([
@@ -2637,7 +2645,7 @@ const buildOrganizerProfile = async ({ event, actorUserId, now }) => {
     })
       .populate(
         "organizerUserId",
-        "fullName email avatarUrl title verificationBadge organizerBranding",
+        "fullName email avatarUrl title verificationBadge",
       )
       .populate("workspaceId", "name slug")
     .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt")
@@ -2700,7 +2708,7 @@ const getOrganizerProfileById = async ({
   actorUserId,
 }) => {
   const organizer = await User.findById(organizerUserId).select(
-    "fullName email avatarUrl title verificationBadge organizerBranding bio",
+    "fullName email avatarUrl title verificationBadge bio",
   );
 
   if (!organizer) {
@@ -2713,7 +2721,7 @@ const getOrganizerProfileById = async ({
     .sort({ startsAt: -1, createdAt: -1 })
     .populate(
       "organizerUserId",
-      "fullName email avatarUrl title verificationBadge organizerBranding bio",
+      "fullName email avatarUrl title verificationBadge bio",
     )
     .populate("workspaceId", "name slug")
     .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt");
@@ -2751,7 +2759,7 @@ const getEventById = async ({ eventId, actorUserId }) => {
   const event = await Event.findById(eventId)
     .populate(
       "organizerUserId",
-      "fullName email avatarUrl title verificationBadge organizerBranding",
+      "fullName email avatarUrl title verificationBadge",
     )
     .populate("workspaceId", "name slug")
     .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt");
@@ -2954,14 +2962,6 @@ const updateEvent = async ({
   const payloadWithoutCenterId = { ...payload };
   delete payloadWithoutCenterId.eventCenterId;
   Object.assign(event, payloadWithoutCenterId);
-
-  if (payload.branding) {
-    event.branding = {
-      ...(event.branding || {}),
-      ...payload.branding,
-      updatedAt: new Date(),
-    };
-  }
 
   if (hasTicketCategoriesUpdate) {
     const normalizedCategories = normalizeTicketCategories({
@@ -5497,7 +5497,7 @@ const listEventRatings = async ({
   const event = await Event.findById(eventId)
     .populate(
       "organizerUserId",
-      "fullName email avatarUrl title verificationBadge organizerBranding",
+      "fullName email avatarUrl title verificationBadge",
     );
 
   if (!event) {

@@ -16,7 +16,7 @@ const eventExportSchema = new Schema(
     },
     kind: {
       type: String,
-      enum: ["tickets", "attendees", "finance", "campaigns"],
+      enum: ["tickets", "attendees", "finance"],
       default: "tickets",
       index: true,
     },

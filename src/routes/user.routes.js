@@ -9,14 +9,11 @@ const {
   updatePasswordSchema,
   updatePreferencesSchema,
   attendanceReportQuerySchema,
-  updateOrganizerBrandingSchema,
 } = require("../validations/user.validation");
 const {
   getMyProfileController,
   getMySubscriptionController,
-  getMyOrganizerBrandingController,
   updateMyProfileController,
-  updateMyOrganizerBrandingController,
   updateMyPasswordController,
   getMyPreferencesController,
   updateMyPreferencesController,
@@ -29,13 +26,7 @@ router.use(authMiddleware);
 
 router.get("/me", getMyProfileController);
 router.get("/me/subscription", getMySubscriptionController);
-router.get("/me/organizer-branding", getMyOrganizerBrandingController);
 router.patch("/me", validateBody(updateProfileSchema), updateMyProfileController);
-router.patch(
-  "/me/organizer-branding",
-  validateBody(updateOrganizerBrandingSchema),
-  updateMyOrganizerBrandingController,
-);
 router.get("/me/preferences", getMyPreferencesController);
 router.patch(
   "/me/preferences",

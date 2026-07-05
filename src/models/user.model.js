@@ -29,60 +29,6 @@ const verificationBadgeSchema = new Schema(
   { _id: false },
 );
 
-const organizerBrandingSchema = new Schema(
-  {
-    displayName: {
-      type: String,
-      trim: true,
-      maxlength: 120,
-      default: "",
-    },
-    tagline: {
-      type: String,
-      trim: true,
-      maxlength: 180,
-      default: "",
-    },
-    logoUrl: {
-      type: String,
-      trim: true,
-      default: "",
-    },
-    bannerUrl: {
-      type: String,
-      trim: true,
-      default: "",
-    },
-    primaryColor: {
-      type: String,
-      trim: true,
-      maxlength: 24,
-      default: "#5BDFB3",
-    },
-    accentColor: {
-      type: String,
-      trim: true,
-      maxlength: 24,
-      default: "#7C5CFF",
-    },
-    headerStyle: {
-      type: String,
-      enum: ["soft", "bold"],
-      default: "soft",
-    },
-    ticketStyle: {
-      type: String,
-      enum: ["classic", "branded"],
-      default: "classic",
-    },
-    updatedAt: {
-      type: Date,
-      default: null,
-    },
-  },
-  { _id: false },
-);
-
 const userSchema = new Schema(
   {
     fullName: {
@@ -211,20 +157,6 @@ const userSchema = new Schema(
     premiumExpiresAt: {
       type: Date,
       default: null,
-    },
-    organizerBranding: {
-      type: organizerBrandingSchema,
-      default: () => ({
-        displayName: "",
-        tagline: "",
-        logoUrl: "",
-        bannerUrl: "",
-        primaryColor: "#5BDFB3",
-        accentColor: "#7C5CFF",
-        headerStyle: "soft",
-        ticketStyle: "classic",
-        updatedAt: null,
-      }),
     },
   },
   {

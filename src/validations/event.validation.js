@@ -2,7 +2,6 @@ const { z } = require("zod");
 
 const objectIdRegex = /^[a-fA-F0-9]{24}$/;
 const workspaceRefRegex = /^([a-fA-F0-9]{24}|[a-z0-9]+(?:-[a-z0-9]+)*)$/;
-const colorHexRegex = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 const objectIdSchema = z.string().regex(objectIdRegex, "Invalid id format");
 const workspaceRefSchema = z
@@ -117,19 +116,6 @@ const ticketCategorySchema = z.object({
   priceNaira: z.coerce.number().min(0).optional().default(0),
 });
 
-const eventBrandingSchema = z.object({
-  useOrganizerDefault: z.boolean().optional().default(true),
-  overrideEnabled: z.boolean().optional().default(false),
-  displayName: z.string().trim().max(120).optional(),
-  tagline: z.string().trim().max(180).optional(),
-  logoUrl: z.string().trim().url().max(500).optional(),
-  bannerUrl: z.string().trim().url().max(500).optional(),
-  primaryColor: z.string().trim().regex(colorHexRegex).optional(),
-  accentColor: z.string().trim().regex(colorHexRegex).optional(),
-  headerStyle: z.enum(["soft", "bold"]).optional().default("soft"),
-  ticketStyle: z.enum(["classic", "branded"]).optional().default("classic"),
-});
-
 const createEventSchema = z
   .object({
     workspaceId: workspaceRefSchema.optional(),
@@ -161,7 +147,6 @@ const createEventSchema = z
     ticketPriceNaira: z.coerce.number().min(0).optional().default(0),
     expectedTickets: z.coerce.number().int().min(1).max(200000),
     ticketCategories: z.array(ticketCategorySchema).max(12).optional().default([]),
-    branding: eventBrandingSchema.optional(),
     recurrence: recurrenceSchema.optional().default({ type: "none", interval: 1, daysOfWeek: [] }),
     pricing: pricingSchema.optional().default({
       dynamicEnabled: false,
@@ -371,7 +356,6 @@ const updateEventSchema = z
     ticketPriceNaira: z.coerce.number().min(0).optional(),
     expectedTickets: z.coerce.number().int().min(1).max(200000).optional(),
     ticketCategories: z.array(ticketCategorySchema).max(12).optional(),
-    branding: eventBrandingSchema.optional(),
     recurrence: recurrenceSchema.optional(),
     pricing: pricingSchema.optional(),
     resale: resalePolicySchema.optional(),
@@ -387,12 +371,16 @@ const listEventsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
   search: z.string().trim().max(120).optional(),
   sort: z.enum(["dateAsc", "dateDesc", "newest"]).optional().default("dateAsc"),
-  filter: z.enum(["upcoming", "this-month", "all"]).optional().default("upcoming"),
+  filter: z
+    .enum(["upcoming", "this-week", "this-month", "all"])
+    .optional()
+    .default("upcoming"),
   salePhase: z.enum(["all", "main", "presale"]).optional().default("main"),
   from: dateStringSchema.optional(),
   to: dateStringSchema.optional(),
   ticketType: z.enum(["all", "free", "paid"]).optional().default("all"),
   workspaceId: workspaceRefSchema.optional(),
+  state: z.string().trim().max(80).optional(),
 });
 
 const listFeaturedEventsQuerySchema = z.object({

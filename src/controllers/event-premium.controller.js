@@ -1,101 +1,11 @@
 const asyncHandler = require("../utils/async-handler");
 const {
-  getEventBranding,
-  updateEventBranding,
-  listEventCampaigns,
-  createEventCampaign,
-  getEventCampaignById,
-  updateEventCampaignSchedule,
   listEventExports,
   createEventExport,
   getEventExportById,
   getEventExportPreview,
   getEventExportDownload,
 } = require("../services/event-premium.service");
-
-const getEventBrandingController = asyncHandler(async (req, res) => {
-  const data = await getEventBranding({
-    eventId: req.params.eventId,
-    actorUserId: req.auth.userId,
-  });
-
-  res.status(200).json({
-    success: true,
-    message: "Event branding fetched",
-    data,
-  });
-});
-
-const updateEventBrandingController = asyncHandler(async (req, res) => {
-  const data = await updateEventBranding({
-    eventId: req.params.eventId,
-    actorUserId: req.auth.userId,
-    payload: req.body,
-  });
-
-  res.status(200).json({
-    success: true,
-    message: "Event branding updated",
-    data,
-  });
-});
-
-const listEventCampaignsController = asyncHandler(async (req, res) => {
-  const data = await listEventCampaigns({
-    eventId: req.params.eventId,
-    actorUserId: req.auth.userId,
-    query: req.query,
-  });
-
-  res.status(200).json({
-    success: true,
-    message: "Event campaigns fetched",
-    data,
-  });
-});
-
-const createEventCampaignController = asyncHandler(async (req, res) => {
-  const data = await createEventCampaign({
-    eventId: req.params.eventId,
-    actorUserId: req.auth.userId,
-    payload: req.body,
-  });
-
-  res.status(201).json({
-    success: true,
-    message: "Campaign created",
-    data,
-  });
-});
-
-const getEventCampaignController = asyncHandler(async (req, res) => {
-  const data = await getEventCampaignById({
-    eventId: req.params.eventId,
-    campaignId: req.params.campaignId,
-    actorUserId: req.auth.userId,
-  });
-
-  res.status(200).json({
-    success: true,
-    message: "Campaign fetched",
-    data,
-  });
-});
-
-const updateEventCampaignController = asyncHandler(async (req, res) => {
-  const data = await updateEventCampaignSchedule({
-    eventId: req.params.eventId,
-    campaignId: req.params.campaignId,
-    actorUserId: req.auth.userId,
-    payload: req.body,
-  });
-
-  res.status(200).json({
-    success: true,
-    message: "Campaign updated",
-    data,
-  });
-});
 
 const listEventExportsController = asyncHandler(async (req, res) => {
   const data = await listEventExports({
@@ -169,12 +79,6 @@ const downloadEventExportController = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  getEventBrandingController,
-  updateEventBrandingController,
-  listEventCampaignsController,
-  createEventCampaignController,
-  getEventCampaignController,
-  updateEventCampaignController,
   listEventExportsController,
   createEventExportController,
   getEventExportController,

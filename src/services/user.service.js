@@ -203,72 +203,6 @@ const getUserSubscription = async (userId) => {
   return subscription;
 };
 
-const normalizeOrganizerBranding = (branding = {}) => ({
-  displayName: String(branding.displayName || "").trim(),
-  tagline: String(branding.tagline || "").trim(),
-  logoUrl: String(branding.logoUrl || "").trim(),
-  bannerUrl: String(branding.bannerUrl || "").trim(),
-  primaryColor: String(branding.primaryColor || "#5BDFB3").trim() || "#5BDFB3",
-  accentColor: String(branding.accentColor || "#7C5CFF").trim() || "#7C5CFF",
-  headerStyle:
-    String(branding.headerStyle || "soft").trim() === "bold" ? "bold" : "soft",
-  ticketStyle:
-    String(branding.ticketStyle || "classic").trim() === "branded"
-      ? "branded"
-      : "classic",
-  updatedAt: branding.updatedAt ? new Date(branding.updatedAt).toISOString() : null,
-});
-
-const getUserOrganizerBranding = async (userId) => {
-  const user = await User.findById(userId).select(
-    "fullName organizerBranding subscriptionTier subscriptionStatus premiumActivatedAt premiumExpiresAt",
-  );
-
-  if (!user) {
-    throw new ApiError(404, "User profile not found");
-  }
-
-  const { subscription } = await syncUserSubscriptionState({ user });
-
-  return {
-    user: {
-      _id: String(user._id),
-      fullName: user.fullName,
-    },
-    subscription,
-    branding: normalizeOrganizerBranding(user.organizerBranding || {}),
-  };
-};
-
-const updateUserOrganizerBranding = async (userId, payload) => {
-  const user = await User.findById(userId);
-
-  if (!user) {
-    throw new ApiError(404, "User profile not found");
-  }
-
-  const { subscription } = await syncUserSubscriptionState({ user });
-
-  if (
-    subscription.subscriptionTier !== "premium" ||
-    subscription.subscriptionStatus !== "active"
-  ) {
-    throw new ApiError(403, "Branding is available on Vera Premium only");
-  }
-
-  const next = {
-    ...(user.organizerBranding || {}),
-    ...payload,
-    updatedAt: new Date(),
-  };
-  user.organizerBranding = next;
-  await user.save();
-
-  return {
-    branding: normalizeOrganizerBranding(user.organizerBranding || {}),
-  };
-};
-
 const updateUserProfile = async (userId, payload) => {
   const user = await User.findByIdAndUpdate(userId, payload, {
     new: true,
@@ -598,9 +532,7 @@ const updatePassword = async ({ userId, currentPassword, newPassword }) => {
 module.exports = {
   getUserProfile,
   getUserSubscription,
-  getUserOrganizerBranding,
   updateUserProfile,
-  updateUserOrganizerBranding,
   updatePassword,
   getUserPreferences,
   updateUserPreferences,

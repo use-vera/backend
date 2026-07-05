@@ -47,12 +47,7 @@ const {
   updateTicketTodoSchema,
 } = require("../validations/event.validation");
 const {
-  eventCampaignParamsSchema,
   eventExportParamsSchema,
-  listEventCampaignsQuerySchema,
-  createEventCampaignSchema,
-  updateEventCampaignScheduleSchema,
-  updateEventBrandingSchema,
   listEventExportsQuerySchema,
   createEventExportSchema,
 } = require("../validations/event-premium.validation");
@@ -107,12 +102,6 @@ const {
   createEventPostCommentController,
 } = require("../controllers/event.controller");
 const {
-  getEventBrandingController,
-  updateEventBrandingController,
-  listEventCampaignsController,
-  createEventCampaignController,
-  getEventCampaignController,
-  updateEventCampaignController,
   listEventExportsController,
   createEventExportController,
   getEventExportController,
@@ -287,40 +276,6 @@ router.post(
   validateParams(eventIdParamsSchema),
   validateBody(eventReminderSchema),
   updateEventReminderController,
-);
-router.get(
-  "/:eventId/branding",
-  validateParams(eventIdParamsSchema),
-  getEventBrandingController,
-);
-router.patch(
-  "/:eventId/branding",
-  validateParams(eventIdParamsSchema),
-  validateBody(updateEventBrandingSchema),
-  updateEventBrandingController,
-);
-router.get(
-  "/:eventId/campaigns",
-  validateParams(eventIdParamsSchema),
-  validateQuery(listEventCampaignsQuerySchema),
-  listEventCampaignsController,
-);
-router.post(
-  "/:eventId/campaigns",
-  validateParams(eventIdParamsSchema),
-  validateBody(createEventCampaignSchema),
-  createEventCampaignController,
-);
-router.get(
-  "/:eventId/campaigns/:campaignId",
-  validateParams(eventCampaignParamsSchema),
-  getEventCampaignController,
-);
-router.patch(
-  "/:eventId/campaigns/:campaignId",
-  validateParams(eventCampaignParamsSchema),
-  validateBody(updateEventCampaignScheduleSchema),
-  updateEventCampaignController,
 );
 router.get(
   "/:eventId/exports",

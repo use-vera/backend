@@ -2,9 +2,7 @@ const asyncHandler = require("../utils/async-handler");
 const {
   getUserProfile,
   getUserSubscription,
-  getUserOrganizerBranding,
   updateUserProfile,
-  updateUserOrganizerBranding,
   updatePassword,
   getUserPreferences,
   updateUserPreferences,
@@ -28,26 +26,6 @@ const getMySubscriptionController = asyncHandler(async (req, res) => {
     success: true,
     message: "Subscription fetched",
     data: subscription,
-  });
-});
-
-const getMyOrganizerBrandingController = asyncHandler(async (req, res) => {
-  const payload = await getUserOrganizerBranding(req.auth.userId);
-
-  res.status(200).json({
-    success: true,
-    message: "Organizer branding fetched",
-    data: payload,
-  });
-});
-
-const updateMyOrganizerBrandingController = asyncHandler(async (req, res) => {
-  const payload = await updateUserOrganizerBranding(req.auth.userId, req.body);
-
-  res.status(200).json({
-    success: true,
-    message: "Organizer branding updated",
-    data: payload,
   });
 });
 
@@ -112,9 +90,7 @@ const getMyAttendanceReportController = asyncHandler(async (req, res) => {
 module.exports = {
   getMyProfileController,
   getMySubscriptionController,
-  getMyOrganizerBrandingController,
   updateMyProfileController,
-  updateMyOrganizerBrandingController,
   updateMyPasswordController,
   getMyPreferencesController,
   updateMyPreferencesController,

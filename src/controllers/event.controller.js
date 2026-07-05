@@ -79,6 +79,7 @@ const listEventsController = asyncHandler(async (req, res) => {
     to: req.query.to,
     ticketType: req.query.ticketType,
     workspaceId: req.query.workspaceId,
+    state: req.query.state,
   });
 
   res.status(200).json({
