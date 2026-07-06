@@ -36,6 +36,7 @@ const {
   updateEventChatMessageBodySchema,
   eventChatQuerySchema,
   createEventPostSchema,
+  updateEventPostSchema,
   listEventPostsQuerySchema,
   createEventPostCommentSchema,
   listEventPostCommentsQuerySchema,
@@ -97,6 +98,8 @@ const {
   deleteEventChatMessageController,
   listEventPostsController,
   createEventPostController,
+  updateEventPostController,
+  deleteEventPostController,
   toggleEventPostLikeController,
   listEventPostCommentsController,
   createEventPostCommentController,
@@ -338,6 +341,17 @@ router.post(
   validateParams(eventIdParamsSchema),
   validateBody(createEventPostSchema),
   createEventPostController,
+);
+router.patch(
+  "/posts/:postId",
+  validateParams(postIdParamsSchema),
+  validateBody(updateEventPostSchema),
+  updateEventPostController,
+);
+router.delete(
+  "/posts/:postId",
+  validateParams(postIdParamsSchema),
+  deleteEventPostController,
 );
 router.post(
   "/posts/:postId/likes/toggle",

@@ -42,6 +42,8 @@ const {
   deleteEventChatMessage,
   listEventPosts,
   createEventPost,
+  updateEventPost,
+  deleteEventPost,
   toggleEventPostLike,
   listEventPostComments,
   createEventPostComment,
@@ -372,6 +374,33 @@ const createEventPostController = asyncHandler(async (req, res) => {
   res.status(201).json({
     success: true,
     message: "Event post created",
+    data: result,
+  });
+});
+
+const updateEventPostController = asyncHandler(async (req, res) => {
+  const result = await updateEventPost({
+    postId: req.params.postId,
+    actorUserId: req.auth.userId,
+    payload: req.body,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Post updated",
+    data: result,
+  });
+});
+
+const deleteEventPostController = asyncHandler(async (req, res) => {
+  const result = await deleteEventPost({
+    postId: req.params.postId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Post deleted",
     data: result,
   });
 });
@@ -786,6 +815,8 @@ module.exports = {
   deleteEventChatMessageController,
   listEventPostsController,
   createEventPostController,
+  updateEventPostController,
+  deleteEventPostController,
   toggleEventPostLikeController,
   listEventPostCommentsController,
   createEventPostCommentController,

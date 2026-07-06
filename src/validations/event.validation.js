@@ -550,6 +550,10 @@ const createEventPostSchema = z.object({
   visibility: z.enum(["public", "ticket-holders"]).optional().default("public"),
 });
 
+const updateEventPostSchema = z.object({
+  caption: z.string().trim().max(800),
+});
+
 const listEventPostsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(100000).optional().default(1),
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
@@ -653,6 +657,7 @@ module.exports = {
   updateEventChatMessageBodySchema,
   eventChatQuerySchema,
   createEventPostSchema,
+  updateEventPostSchema,
   listEventPostsQuerySchema,
   createEventPostCommentSchema,
   listEventPostCommentsQuerySchema,

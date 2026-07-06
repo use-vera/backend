@@ -6255,6 +6255,67 @@ const toggleEventPostLike = async ({ postId, actorUserId }) => {
   };
 };
 
+const updateEventPost = async ({ postId, actorUserId, payload }) => {
+  const { post } = await getPostWithAccess({
+    postId,
+    actorUserId,
+    requireParticipant: false,
+  });
+
+  if (toIdString(post.authorUserId) !== String(actorUserId)) {
+    throw new ApiError(403, "Only the post author can edit this post");
+  }
+
+  const caption = String(payload.caption ?? "").trim();
+  const mediaCount = post.mediaUrls?.length || (post.imageUrl ? 1 : 0);
+
+  if (!caption && !mediaCount) {
+    throw new ApiError(400, "A post needs a caption or media");
+  }
+
+  post.caption = caption;
+  await post.save();
+
+  const refreshed = await EventPost.findById(post._id)
+    .populate("authorUserId", "fullName email avatarUrl title verificationBadge")
+    .populate("eventId", "name imageUrl address eventCenterId");
+
+  const likedByMe = Boolean(
+    await EventPostLike.exists({ postId: post._id, userId: actorUserId }),
+  );
+
+  return mapEventPostForResponse({
+    post: refreshed || post,
+    likedByMe,
+  });
+};
+
+const deleteEventPost = async ({ postId, actorUserId }) => {
+  const { post, event } = await getPostWithAccess({
+    postId,
+    actorUserId,
+    requireParticipant: false,
+  });
+
+  const isAuthor = toIdString(post.authorUserId) === String(actorUserId);
+  const isOrganizer = toIdString(event.organizerUserId) === String(actorUserId);
+
+  if (!isAuthor && !isOrganizer) {
+    throw new ApiError(
+      403,
+      "Only the post author or event organizer can delete this post",
+    );
+  }
+
+  await Promise.all([
+    EventPost.deleteOne({ _id: post._id }),
+    EventPostLike.deleteMany({ postId: post._id }),
+    EventPostComment.deleteMany({ postId: post._id }),
+  ]);
+
+  return { postId: String(post._id), deleted: true };
+};
+
 const listEventPostComments = async ({
   postId,
   actorUserId,
@@ -6485,6 +6546,8 @@ module.exports = {
   deleteEventChatMessage,
   listEventPosts,
   createEventPost,
+  updateEventPost,
+  deleteEventPost,
   toggleEventPostLike,
   listEventPostComments,
   createEventPostComment,
