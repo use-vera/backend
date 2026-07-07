@@ -4,6 +4,7 @@ const morgan = require("morgan");
 const path = require("path");
 const routes = require("./routes");
 const paymentRoutes = require("./routes/payment.routes");
+const publicEventRoutes = require("./routes/public-event.routes");
 const {
   notFoundMiddleware,
   errorMiddleware,
@@ -33,6 +34,7 @@ app.use(
   }),
 );
 app.use("/api/payments", paymentRoutes);
+app.use("/api/public/events", publicEventRoutes);
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));

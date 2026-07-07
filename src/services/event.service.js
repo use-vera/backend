@@ -2847,6 +2847,159 @@ const getEventById = async ({ eventId, actorUserId }) => {
   };
 };
 
+// Public (unauthenticated) read models for the marketing site. These
+// deliberately never touch actorUserId-scoped data (myTicket, myRating,
+// friendsGoingCount, draft/cancelled organizer history) since there is no
+// authenticated caller to scope them to.
+const listPublicEvents = async ({
+  page = 1,
+  limit = 20,
+  search,
+  sort = "dateAsc",
+  filter = "upcoming",
+  from,
+  to,
+  ticketType = "all",
+  state,
+}) => {
+  const query = {
+    status: "published",
+  };
+
+  if (ticketType === "free") {
+    query.isPaid = false;
+  }
+
+  if (ticketType === "paid") {
+    query.isPaid = true;
+  }
+
+  const trimmedState = String(state || "").trim();
+
+  if (trimmedState) {
+    query.state = new RegExp(`^${escapeRegex(trimmedState)}$`, "i");
+  }
+
+  const trimmedSearch = String(search || "").trim();
+
+  if (trimmedSearch) {
+    const pattern = new RegExp(escapeRegex(trimmedSearch), "i");
+    query.$or = [
+      { name: pattern },
+      { description: pattern },
+      { address: pattern },
+    ];
+  }
+
+  const rawItems = await Event.find(query)
+    .populate("organizerUserId", "fullName avatarUrl title verificationBadge")
+    .populate(
+      "eventCenterId",
+      "name latitude longitude verified successfulEventsCount usageCount verifiedAt",
+    )
+    .sort({ createdAt: -1 });
+
+  const now = new Date();
+  const filtered = applyEventFilters({
+    events: rawItems,
+    now,
+    filter,
+    sort,
+    from,
+    to,
+  });
+
+  const phaseFiltered = filtered.filter(
+    (entry) => resolveEventSalePhase(entry.event, now) !== "presale",
+  );
+
+  const totalItems = phaseFiltered.length;
+  const skip = (page - 1) * limit;
+  const paged = phaseFiltered.slice(skip, skip + limit);
+  await refreshEventCentersForEvents(paged.map((entry) => entry.event));
+
+  const eventIds = paged.map((item) => item.event._id);
+  const organizerIds = paged.map((item) =>
+    toIdString(item.event.organizerUserId),
+  );
+
+  const [statsMap, ratingsMap, organizerBadgeMap] = await Promise.all([
+    getEventTicketStatsMap(eventIds),
+    getEventRatingsSummaryMap(eventIds, undefined),
+    getOrganizerVerificationMap(organizerIds),
+  ]);
+
+  const items = paged.map((entry) => {
+    const key = String(entry.event._id);
+
+    return mapEventForResponse({
+      event: entry.event,
+      occurrence: entry.occurrence,
+      stats: statsMap.get(key),
+      ratings: ratingsMap.get(key),
+      organizerBadge: organizerBadgeMap.get(
+        toIdString(entry.event.organizerUserId),
+      ),
+      now,
+    });
+  });
+
+  return {
+    items,
+    ...buildPaginationMeta({ page, limit, totalItems }),
+  };
+};
+
+const getPublicEventById = async ({ eventId }) => {
+  const event = await Event.findById(eventId)
+    .populate("organizerUserId", "fullName avatarUrl title verificationBadge")
+    .populate(
+      "eventCenterId",
+      "name latitude longitude verified successfulEventsCount usageCount verifiedAt",
+    );
+
+  if (!event || event.status !== "published") {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await refreshEventCentersForEvents([event]);
+
+  const now = new Date();
+  const occurrence = resolveOccurrenceWindow(event, now) || {
+    startsAt: new Date(event.startsAt),
+    endsAt: new Date(event.endsAt),
+  };
+
+  const [statsMap, ratingsMap, ratingsPreview, organizerBadgeMap] =
+    await Promise.all([
+      getEventTicketStatsMap([event._id]),
+      getEventRatingsSummaryMap([event._id], undefined),
+      EventRating.find({ eventId: event._id })
+        .populate("userId", "fullName avatarUrl title verificationBadge")
+        .sort({ createdAt: -1 })
+        .limit(8),
+      getOrganizerVerificationMap([toIdString(event.organizerUserId)]),
+    ]);
+
+  const mappedEvent = mapEventForResponse({
+    event,
+    occurrence,
+    stats: statsMap.get(String(event._id)),
+    ratings: ratingsMap.get(String(event._id)),
+    organizerBadge: organizerBadgeMap.get(toIdString(event.organizerUserId)),
+    now,
+  });
+
+  return {
+    event: mappedEvent,
+    ratings: {
+      averageRating: mappedEvent.averageRating,
+      ratingsCount: mappedEvent.ratingsCount,
+      items: ratingsPreview,
+    },
+  };
+};
+
 const updateEvent = async ({
   eventId,
   actorUserId,
@@ -6530,6 +6683,8 @@ module.exports = {
   createEvent,
   searchEventCenters,
   listEvents,
+  listPublicEvents,
+  getPublicEventById,
   listEventFeed,
   listMyEvents,
   listFeaturedEvents,
