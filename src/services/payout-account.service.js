@@ -1,5 +1,6 @@
 const ApiError = require("../utils/api-error");
 const PayoutAccount = require("../models/payout-account.model");
+const Withdrawal = require("../models/withdrawal.model");
 const {
   listBanks,
   resolveBankAccount,
@@ -16,9 +17,47 @@ const listNigerianBanks = async () => {
   }
 
   const banks = await listBanks();
-  cachedBanks = banks.map((bank) => ({ name: bank.name, code: bank.code }));
+
+  // Paystack's /bank list mixes NUBAN entries with mobile-money/USSD
+  // channels that resolveBankAccount/createTransferRecipient (both hardcode
+  // type: "nuban") can't actually resolve or pay out to, and sometimes
+  // repeats the same bank code across channel types — both of which broke
+  // the picker (unresolvable accounts, and duplicate React keys). Restrict
+  // to NUBAN and de-dupe by code so every listed bank is both unique and
+  // actually usable.
+  const nubanBanks = banks.filter(
+    (bank) => !bank.type || bank.type === "nuban",
+  );
+  const seenCodes = new Set();
+  cachedBanks = [];
+
+  for (const bank of nubanBanks) {
+    if (seenCodes.has(bank.code)) {
+      continue;
+    }
+
+    seenCodes.add(bank.code);
+    cachedBanks.push({ name: bank.name, code: bank.code });
+  }
 
   return cachedBanks;
+};
+
+/**
+ * Resolve-only, no save — lets the client show the account holder's real
+ * name back to the user for confirmation before anything is persisted.
+ */
+const previewPayoutAccount = async ({ bankCode, accountNumber }) => {
+  const resolved = await resolveBankAccount({ accountNumber, bankCode });
+
+  if (!resolved?.account_name) {
+    throw new ApiError(422, "Could not verify this bank account");
+  }
+
+  return {
+    accountName: resolved.account_name,
+    bankName: resolved.bank_name || "",
+  };
 };
 
 /**
@@ -61,8 +100,34 @@ const upsertPayoutAccount = async ({ organizerUserId, bankCode, accountNumber })
 const getPayoutAccount = async (organizerUserId) =>
   PayoutAccount.findOne({ organizerUserId });
 
+const deletePayoutAccount = async ({ organizerUserId }) => {
+  const payoutAccount = await PayoutAccount.findOne({ organizerUserId });
+
+  if (!payoutAccount) {
+    return { deleted: false };
+  }
+
+  const hasActiveWithdrawal = await Withdrawal.exists({
+    payoutAccountId: payoutAccount._id,
+    status: { $in: ["reserved", "processing"] },
+  });
+
+  if (hasActiveWithdrawal) {
+    throw new ApiError(
+      409,
+      "You have a withdrawal in progress on this account — wait for it to finish before removing it",
+    );
+  }
+
+  await PayoutAccount.deleteOne({ _id: payoutAccount._id });
+
+  return { deleted: true };
+};
+
 module.exports = {
   listNigerianBanks,
+  previewPayoutAccount,
   upsertPayoutAccount,
   getPayoutAccount,
+  deletePayoutAccount,
 };

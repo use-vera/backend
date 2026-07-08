@@ -17,8 +17,10 @@ const {
   listWalletTransactionsController,
   runSettlementController,
   listBanksController,
+  previewPayoutAccountController,
   upsertPayoutAccountController,
   getPayoutAccountController,
+  deletePayoutAccountController,
   requestWithdrawalController,
   listWithdrawalsController,
   applyChargebackController,
@@ -39,11 +41,17 @@ router.post("/settlement/run", requireAdmin, runSettlementController);
 router.get("/banks", listBanksController);
 
 router.post(
+  "/payout-account/preview",
+  validateBody(upsertPayoutAccountSchema),
+  previewPayoutAccountController,
+);
+router.post(
   "/payout-account",
   validateBody(upsertPayoutAccountSchema),
   upsertPayoutAccountController,
 );
 router.get("/payout-account", getPayoutAccountController);
+router.delete("/payout-account", deletePayoutAccountController);
 
 router.post(
   "/withdrawals",

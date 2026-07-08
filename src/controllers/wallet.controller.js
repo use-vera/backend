@@ -8,8 +8,10 @@ const {
 } = require("../services/wallet-settlement.service");
 const {
   listNigerianBanks,
+  previewPayoutAccount,
   upsertPayoutAccount,
   getPayoutAccount,
+  deletePayoutAccount,
 } = require("../services/payout-account.service");
 const {
   requestWithdrawal,
@@ -62,6 +64,19 @@ const listBanksController = asyncHandler(async (req, res) => {
   });
 });
 
+const previewPayoutAccountController = asyncHandler(async (req, res) => {
+  const result = await previewPayoutAccount({
+    bankCode: req.body.bankCode,
+    accountNumber: req.body.accountNumber,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Payout account resolved",
+    data: result,
+  });
+});
+
 const upsertPayoutAccountController = asyncHandler(async (req, res) => {
   const result = await upsertPayoutAccount({
     organizerUserId: req.auth.userId,
@@ -82,6 +97,16 @@ const getPayoutAccountController = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: "Payout account fetched",
+    data: result,
+  });
+});
+
+const deletePayoutAccountController = asyncHandler(async (req, res) => {
+  const result = await deletePayoutAccount({ organizerUserId: req.auth.userId });
+
+  res.status(200).json({
+    success: true,
+    message: result.deleted ? "Payout account removed" : "No payout account to remove",
     data: result,
   });
 });
@@ -133,8 +158,10 @@ module.exports = {
   listWalletTransactionsController,
   runSettlementController,
   listBanksController,
+  previewPayoutAccountController,
   upsertPayoutAccountController,
   getPayoutAccountController,
+  deletePayoutAccountController,
   requestWithdrawalController,
   listWithdrawalsController,
   applyChargebackController,
