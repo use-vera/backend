@@ -9,6 +9,7 @@ const chatRoutes = require("./chat.routes");
 const fileRoutes = require("./file.routes");
 const subscriptionRoutes = require("./subscription.routes");
 const followRoutes = require("./follow.routes");
+const walletRoutes = require("./wallet.routes");
 
 const router = express.Router();
 
@@ -22,5 +23,6 @@ router.use("/chats", chatRoutes);
 router.use("/files", fileRoutes);
 router.use("/subscriptions", subscriptionRoutes);
 router.use("/follows", followRoutes);
+router.use("/wallet", walletRoutes);
 
 module.exports = router;

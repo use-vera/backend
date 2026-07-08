@@ -1,0 +1,66 @@
+const express = require("express");
+const authMiddleware = require("../middlewares/auth.middleware");
+const requireAdmin = require("../middlewares/require-admin.middleware");
+const {
+  validateBody,
+  validateQuery,
+} = require("../middlewares/validate.middleware");
+const {
+  listWalletTransactionsQuerySchema,
+  upsertPayoutAccountSchema,
+  requestWithdrawalSchema,
+  listWithdrawalsQuerySchema,
+  applyChargebackSchema,
+} = require("../validations/wallet.validation");
+const {
+  getWalletSummaryController,
+  listWalletTransactionsController,
+  runSettlementController,
+  listBanksController,
+  upsertPayoutAccountController,
+  getPayoutAccountController,
+  requestWithdrawalController,
+  listWithdrawalsController,
+  applyChargebackController,
+} = require("../controllers/wallet.controller");
+
+const router = express.Router();
+
+router.use(authMiddleware);
+
+router.get("/", getWalletSummaryController);
+router.get(
+  "/transactions",
+  validateQuery(listWalletTransactionsQuerySchema),
+  listWalletTransactionsController,
+);
+router.post("/settlement/run", requireAdmin, runSettlementController);
+
+router.get("/banks", listBanksController);
+
+router.post(
+  "/payout-account",
+  validateBody(upsertPayoutAccountSchema),
+  upsertPayoutAccountController,
+);
+router.get("/payout-account", getPayoutAccountController);
+
+router.post(
+  "/withdrawals",
+  validateBody(requestWithdrawalSchema),
+  requestWithdrawalController,
+);
+router.get(
+  "/withdrawals",
+  validateQuery(listWithdrawalsQuerySchema),
+  listWithdrawalsController,
+);
+
+router.post(
+  "/admin/chargebacks",
+  requireAdmin,
+  validateBody(applyChargebackSchema),
+  applyChargebackController,
+);
+
+module.exports = router;

@@ -116,6 +116,19 @@ const env = {
     nodeEnv !== "production",
   ),
   expoAccessToken: process.env.EXPO_ACCESS_TOKEN || "",
+  walletCreditingEnabled: toBoolean(process.env.WALLET_CREDITING_ENABLED, true),
+  walletSettlementMonitorEnabled: toBoolean(
+    process.env.WALLET_SETTLEMENT_MONITOR_ENABLED,
+    true,
+  ),
+  walletSettlementMonitorTickMs: toNumber(
+    process.env.WALLET_SETTLEMENT_MONITOR_TICK_MS,
+    5 * 60 * 1000,
+  ),
+  walletMinWithdrawalKobo: toNumber(
+    process.env.WALLET_MIN_WITHDRAWAL_KOBO,
+    100000,
+  ),
 };
 
 if (

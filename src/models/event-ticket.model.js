@@ -60,7 +60,7 @@ const eventTicketSchema = new Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "paid", "cancelled", "used", "expired"],
+      enum: ["pending", "paid", "cancelled", "used", "expired", "refunded"],
       default: "pending",
       index: true,
     },
@@ -133,6 +133,10 @@ const eventTicketSchema = new Schema(
       default: null,
     },
     usedAt: {
+      type: Date,
+      default: null,
+    },
+    refundedAt: {
       type: Date,
       default: null,
     },

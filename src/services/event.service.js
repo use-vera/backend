@@ -26,6 +26,12 @@ const {
   initializePaystackTransaction,
   verifyPaystackTransaction,
 } = require("./paystack.service");
+const { creditTicketSale } = require("./wallet.service");
+const {
+  finalizeWithdrawalSuccess,
+  finalizeWithdrawalFailure,
+} = require("./withdrawal.service");
+const { withMongoTransaction } = require("../utils/with-mongo-transaction");
 const {
   resolveOrUpsertEventCenter,
   searchEventCenters,
@@ -1902,6 +1908,7 @@ const markTicketPaidFromVerifiedPayment = async ({
   paymentReference,
   paymentData,
   persistPaymentReference = true,
+  session = null,
 }) => {
   const amountKobo = Number(paymentData?.amount || 0);
   const expectedKobo = Math.round(Number(ticket.totalPriceNaira || 0) * 100);
@@ -1942,7 +1949,7 @@ const markTicketPaidFromVerifiedPayment = async ({
     };
 
     try {
-      await ticket.save();
+      await ticket.save({ session });
       return ticket;
     } catch (error) {
       if (!isDuplicateKeyError(error)) {
@@ -2031,6 +2038,7 @@ const markPaymentAttemptVerified = async ({
   paymentAttempt,
   paymentData,
   fulfillmentTicketId,
+  session = null,
 }) => {
   if (!paymentAttempt) {
     return;
@@ -2042,7 +2050,7 @@ const markPaymentAttemptVerified = async ({
   paymentAttempt.fulfillmentStatus = "done";
   paymentAttempt.failureReason = "";
   paymentAttempt.fulfillmentTicketId = fulfillmentTicketId || null;
-  await paymentAttempt.save();
+  await paymentAttempt.save({ session });
 };
 
 const markPaymentAttemptFulfillmentFailed = async ({
@@ -2073,60 +2081,76 @@ const finalizeTicketPurchasePayment = async ({
   const primaryTicketId = String(
     paymentAttempt?.ticketId || ticket?._id || "",
   ).trim();
-  let ticketsToFinalize = [ticket];
 
-  if (paymentAttemptId) {
-    const batchQuery = {
-      buyerUserId: toIdString(ticket?.buyerUserId),
-      eventId: toIdString(ticket?.eventId),
-      paymentProvider: "paystack",
-      status: { $in: ["pending", "paid", "used"] },
-      $or: [
-        { "paymentMetadata.paymentAttemptId": paymentAttemptId },
-      ],
-    };
+  const { primaryTicket, newlyActivatedCount } = await withMongoTransaction(
+    async (session) => {
+      let ticketsToFinalize = [ticket];
 
-    if (primaryTicketId && objectIdRegex.test(primaryTicketId)) {
-      batchQuery.$or.push({ _id: primaryTicketId });
-    }
+      if (paymentAttemptId) {
+        const batchQuery = {
+          buyerUserId: toIdString(ticket?.buyerUserId),
+          eventId: toIdString(ticket?.eventId),
+          paymentProvider: "paystack",
+          status: { $in: ["pending", "paid", "used"] },
+          $or: [
+            { "paymentMetadata.paymentAttemptId": paymentAttemptId },
+          ],
+        };
 
-    const batchTickets = await EventTicket.find(batchQuery).sort({
-      createdAt: 1,
-    });
+        if (primaryTicketId && objectIdRegex.test(primaryTicketId)) {
+          batchQuery.$or.push({ _id: primaryTicketId });
+        }
 
-    if (batchTickets.length) {
-      ticketsToFinalize = batchTickets;
-    }
-  }
+        const batchTickets = await EventTicket.find(batchQuery)
+          .sort({ createdAt: 1 })
+          .session(session);
 
-  let newlyActivatedCount = 0;
-  let primaryTicket = ticket;
+        if (batchTickets.length) {
+          ticketsToFinalize = batchTickets;
+        }
+      }
 
-  for (const currentTicket of ticketsToFinalize) {
-    const isPrimaryTicket = String(currentTicket._id) === primaryTicketId;
-    const wasAlreadyUsable =
-      currentTicket.status === "paid" || currentTicket.status === "used";
+      let activatedCount = 0;
+      let resolvedPrimaryTicket = ticket;
 
-    if (!wasAlreadyUsable) {
-      await markTicketPaidFromVerifiedPayment({
-        ticket: currentTicket,
-        paymentReference,
+      for (const currentTicket of ticketsToFinalize) {
+        const isPrimaryTicket = String(currentTicket._id) === primaryTicketId;
+        const wasAlreadyUsable =
+          currentTicket.status === "paid" || currentTicket.status === "used";
+
+        if (!wasAlreadyUsable) {
+          await markTicketPaidFromVerifiedPayment({
+            ticket: currentTicket,
+            paymentReference,
+            paymentData,
+            persistPaymentReference: isPrimaryTicket,
+            session,
+          });
+          activatedCount += 1;
+
+          if (env.walletCreditingEnabled) {
+            await creditTicketSale({ ticket: currentTicket, session });
+          }
+        }
+
+        if (isPrimaryTicket) {
+          resolvedPrimaryTicket = currentTicket;
+        }
+      }
+
+      await markPaymentAttemptVerified({
+        paymentAttempt,
         paymentData,
-        persistPaymentReference: isPrimaryTicket,
+        fulfillmentTicketId: resolvedPrimaryTicket?._id || ticket?._id,
+        session,
       });
-      newlyActivatedCount += 1;
-    }
 
-    if (isPrimaryTicket) {
-      primaryTicket = currentTicket;
-    }
-  }
-
-  await markPaymentAttemptVerified({
-    paymentAttempt,
-    paymentData,
-    fulfillmentTicketId: primaryTicket?._id || ticket?._id,
-  });
+      return {
+        primaryTicket: resolvedPrimaryTicket,
+        newlyActivatedCount: activatedCount,
+      };
+    },
+  );
 
   if (newlyActivatedCount > 0) {
     void createNotification({
@@ -3508,6 +3532,22 @@ const initializeTicketPurchase = async ({
   const primaryTicket = issuedTickets[0];
 
   if (!event.isPaid || shouldBypassPaystack) {
+    // These tickets were marked "paid" immediately above (free event, or
+    // dev-bypass) — finalizeTicketPurchasePayment is never called for them,
+    // so this is the only place that credits the organizer's wallet for
+    // this batch. Grouped in one transaction since they're all for the
+    // same event/organizer; not joined with the ticket-issuance writes
+    // above (issueSeatTicketsForPurchase doesn't accept a session), which
+    // is an accepted, scoped gap for this low-stakes path (free tickets
+    // credit ₦0; dev-bypass is non-production).
+    if (env.walletCreditingEnabled) {
+      await withMongoTransaction(async (session) => {
+        for (const issuedTicket of issuedTickets) {
+          await creditTicketSale({ ticket: issuedTicket, event, session });
+        }
+      });
+    }
+
     return {
       requiresPayment: false,
       ticket: withClientTicketIdentity(primaryTicket),
@@ -4011,7 +4051,7 @@ const listMyTickets = async ({
   };
 
   if (status === "all") {
-    query.status = { $in: ["paid", "used"] };
+    query.status = { $in: ["paid", "used", "refunded"] };
   } else {
     query.status = status;
   }
@@ -5275,6 +5315,29 @@ const verifyResalePurchase = async ({
 
 const processPaystackWebhookEvent = async (payload) => {
   const eventName = String(payload?.event || "").trim().toLowerCase();
+
+  if (eventName === "transfer.success") {
+    const reference = String(payload?.data?.reference || "").trim();
+
+    if (reference) {
+      await finalizeWithdrawalSuccess({ paystackReference: reference });
+    }
+
+    return { processed: Boolean(reference), event: eventName, reference };
+  }
+
+  if (eventName === "transfer.failed" || eventName === "transfer.reversed") {
+    const reference = String(payload?.data?.reference || "").trim();
+
+    if (reference) {
+      await finalizeWithdrawalFailure({
+        paystackReference: reference,
+        reason: `Paystack reported ${eventName}`,
+      });
+    }
+
+    return { processed: Boolean(reference), event: eventName, reference };
+  }
 
   if (eventName !== "charge.success") {
     return {

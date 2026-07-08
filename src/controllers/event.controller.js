@@ -1,4 +1,5 @@
 const asyncHandler = require("../utils/async-handler");
+const { refundTicket } = require("../services/refund.service");
 const {
   createEvent,
   listEvents,
@@ -520,6 +521,20 @@ const cancelTicketPaymentController = asyncHandler(async (req, res) => {
   });
 });
 
+const refundTicketController = asyncHandler(async (req, res) => {
+  const result = await refundTicket({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    reason: req.body.reason,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Ticket refunded",
+    data: result,
+  });
+});
+
 const checkInTicketController = asyncHandler(async (req, res) => {
   const result = await checkInTicket({
     actorUserId: req.auth.userId,
@@ -825,6 +840,7 @@ module.exports = {
   initializeTicketPurchaseController,
   verifyTicketPaymentController,
   cancelTicketPaymentController,
+  refundTicketController,
   checkInTicketController,
   listMyTicketsController,
   listOrganizerTicketSalesController,

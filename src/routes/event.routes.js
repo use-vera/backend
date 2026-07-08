@@ -52,6 +52,7 @@ const {
   listEventExportsQuerySchema,
   createEventExportSchema,
 } = require("../validations/event-premium.validation");
+const { refundTicketSchema } = require("../validations/wallet.validation");
 const {
   createEventController,
   listEventsController,
@@ -70,6 +71,7 @@ const {
   initializeTicketPurchaseController,
   verifyTicketPaymentController,
   cancelTicketPaymentController,
+  refundTicketController,
   checkInTicketController,
   listMyTicketsController,
   listOrganizerTicketSalesController,
@@ -177,6 +179,12 @@ router.post(
   validateParams(ticketIdParamsSchema),
   validateBody(verifyTicketPaymentSchema),
   cancelTicketPaymentController,
+);
+router.post(
+  "/tickets/:ticketId/refund",
+  validateParams(ticketIdParamsSchema),
+  validateBody(refundTicketSchema),
+  refundTicketController,
 );
 router.post(
   "/tickets/:ticketId/resale",

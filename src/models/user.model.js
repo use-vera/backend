@@ -158,6 +158,17 @@ const userSchema = new Schema(
       type: Date,
       default: null,
     },
+    payoutTier: {
+      type: String,
+      enum: ["standard", "trusted", "enterprise"],
+      default: "standard",
+      index: true,
+    },
+    isPlatformAdmin: {
+      type: Boolean,
+      default: false,
+      select: false,
+    },
   },
   {
     timestamps: true,

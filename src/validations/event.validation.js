@@ -480,7 +480,7 @@ const listMyTicketsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
   search: z.string().trim().max(120).optional(),
   status: z
-    .enum(["all", "pending", "paid", "used", "cancelled", "expired"])
+    .enum(["all", "pending", "paid", "used", "cancelled", "expired", "refunded"])
     .optional()
     .default("all"),
 });

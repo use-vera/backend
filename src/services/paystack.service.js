@@ -127,6 +127,52 @@ const validatePaystackWebhookSignature = (rawBody, signature) => {
   }
 };
 
+const listBanks = async () =>
+  paystackRequest("/bank?currency=NGN&country=nigeria");
+
+const resolveBankAccount = async ({ accountNumber, bankCode }) =>
+  paystackRequest(
+    `/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`,
+  );
+
+const createTransferRecipient = async ({ name, accountNumber, bankCode }) =>
+  paystackRequest("/transferrecipient", {
+    method: "POST",
+    body: {
+      type: "nuban",
+      name,
+      account_number: accountNumber,
+      bank_code: bankCode,
+      currency: "NGN",
+    },
+  });
+
+const initiatePaystackTransfer = async ({
+  amountKobo,
+  recipientCode,
+  reference,
+  reason,
+}) =>
+  paystackRequest("/transfer", {
+    method: "POST",
+    body: {
+      source: "balance",
+      amount: Math.max(1, Math.round(Number(amountKobo || 0))),
+      recipient: recipientCode,
+      reference,
+      reason: reason || undefined,
+    },
+  });
+
+const initiatePaystackRefund = async ({ transactionReference, amountKobo }) =>
+  paystackRequest("/refund", {
+    method: "POST",
+    body: {
+      transaction: transactionReference,
+      amount: Math.max(1, Math.round(Number(amountKobo || 0))),
+    },
+  });
+
 const parsePaystackWebhookBody = (rawBody) => {
   const text = Buffer.isBuffer(rawBody)
     ? rawBody.toString("utf8")
@@ -149,4 +195,9 @@ module.exports = {
   verifyPaystackTransaction,
   validatePaystackWebhookSignature,
   parsePaystackWebhookBody,
+  listBanks,
+  resolveBankAccount,
+  createTransferRecipient,
+  initiatePaystackTransfer,
+  initiatePaystackRefund,
 };
