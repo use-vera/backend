@@ -23,6 +23,12 @@ const {
 } = require("../validations/attendance.validation");
 const { createWorkspaceInviteSchema } = require("../validations/invite.validation");
 const {
+  apiKeyParamsSchema,
+  workspaceApiKeyParamsSchema,
+  createApiKeySchema,
+  updateApiKeySchema,
+} = require("../validations/api-key.validation");
+const {
   createRecurringEventSchema,
   updateRecurringEventSchema,
   recurringEventParamsSchema,
@@ -59,6 +65,13 @@ const {
   updateRecurringEventController,
   listRecurringEventAttendanceController,
 } = require("../controllers/recurring-event.controller");
+const {
+  createApiKeyController,
+  listApiKeysController,
+  updateApiKeyController,
+  upgradeApiKeyToLiveController,
+  revokeApiKeyController,
+} = require("../controllers/api-key.controller");
 
 const router = express.Router();
 
@@ -189,6 +202,34 @@ router.get(
   validateParams(recurringEventParamsSchema),
   validateQuery(recurringEventAttendanceQuerySchema),
   listRecurringEventAttendanceController,
+);
+
+router.post(
+  "/:workspaceId/api-keys",
+  validateParams(workspaceApiKeyParamsSchema),
+  validateBody(createApiKeySchema),
+  createApiKeyController,
+);
+router.get(
+  "/:workspaceId/api-keys",
+  validateParams(workspaceApiKeyParamsSchema),
+  listApiKeysController,
+);
+router.patch(
+  "/:workspaceId/api-keys/:keyId",
+  validateParams(apiKeyParamsSchema),
+  validateBody(updateApiKeySchema),
+  updateApiKeyController,
+);
+router.post(
+  "/:workspaceId/api-keys/:keyId/upgrade-to-live",
+  validateParams(apiKeyParamsSchema),
+  upgradeApiKeyToLiveController,
+);
+router.delete(
+  "/:workspaceId/api-keys/:keyId",
+  validateParams(apiKeyParamsSchema),
+  revokeApiKeyController,
 );
 
 module.exports = router;

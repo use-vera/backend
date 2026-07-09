@@ -129,6 +129,14 @@ const env = {
     process.env.WALLET_MIN_WITHDRAWAL_KOBO,
     100000,
   ),
+  checkoutSessionMonitorEnabled: toBoolean(
+    process.env.CHECKOUT_SESSION_MONITOR_ENABLED,
+    true,
+  ),
+  checkoutSessionMonitorTickMs: toNumber(
+    process.env.CHECKOUT_SESSION_MONITOR_TICK_MS,
+    5 * 60 * 1000,
+  ),
 };
 
 if (

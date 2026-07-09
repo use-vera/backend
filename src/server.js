@@ -17,6 +17,9 @@ const {
 const {
   startWalletSettlementMonitor,
 } = require("./services/wallet-settlement-monitor.service");
+const {
+  startCheckoutSessionMonitor,
+} = require("./services/checkout-session-monitor.service");
 const { initializeSocketServer } = require("./realtime/socket");
 
 const startServer = async () => {
@@ -36,6 +39,7 @@ const startServer = async () => {
       startTicketResaleMonitor();
       startFeaturedSlotMonitor();
       startWalletSettlementMonitor();
+      startCheckoutSessionMonitor();
     });
   } catch (error) {
     // eslint-disable-next-line no-console

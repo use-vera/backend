@@ -5,6 +5,7 @@ const path = require("path");
 const routes = require("./routes");
 const paymentRoutes = require("./routes/payment.routes");
 const publicEventRoutes = require("./routes/public-event.routes");
+const v1Routes = require("./routes/v1.routes");
 const {
   notFoundMiddleware,
   errorMiddleware,
@@ -12,6 +13,12 @@ const {
 const env = require("./config/env");
 
 const app = express();
+
+// So req.ip reflects the real client address (used by the Developer
+// Platform's API request audit log) rather than a reverse proxy's address,
+// when this backend runs behind one. Single-hop default — adjust if the
+// deployment topology sits behind more than one proxy.
+app.set("trust proxy", 1);
 
 const isAllowedOrigin = (origin) => {
   if (!origin) {
@@ -49,6 +56,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/api", routes);
+app.use("/v1", v1Routes);
 app.get("/api/health", (_req, res) => {
   res.status(200).json({
     success: true,

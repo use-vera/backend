@@ -129,6 +129,33 @@ const createWorkspace = async ({
   };
 };
 
+const getOrCreateDefaultWorkspace = async (userId) => {
+  const ownedMembership = await Membership.findOne({
+    userId,
+    role: "owner",
+    status: "active",
+  })
+    .populate("workspaceId")
+    .sort({ createdAt: 1 });
+
+  if (ownedMembership?.workspaceId) {
+    return ownedMembership.workspaceId;
+  }
+
+  const owner = await User.findById(userId);
+
+  if (!owner) {
+    throw new ApiError(404, "Owner user not found");
+  }
+
+  const { workspace } = await createWorkspace({
+    ownerUserId: userId,
+    name: `${owner.fullName}'s Workspace`,
+  });
+
+  return workspace;
+};
+
 const listUserWorkspaces = async (userId) => {
   const memberships = await Membership.find({
     userId,
@@ -499,6 +526,7 @@ const updateMemberRole = async ({
 
 module.exports = {
   createWorkspace,
+  getOrCreateDefaultWorkspace,
   listUserWorkspaces,
   getWorkspaceDetails,
   updateWorkspace,
@@ -508,4 +536,5 @@ module.exports = {
   listWorkspaceMembers,
   getWorkspaceMemberDetails,
   updateMemberRole,
+  requireWorkspaceRole,
 };

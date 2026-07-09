@@ -33,11 +33,18 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
     throw new ApiError(
       409,
       `A ticket with status "${ticket.status}" cannot be refunded`,
+      null,
+      "TICKET_NOT_REFUNDABLE",
     );
   }
 
   if (!ticket.paymentReference) {
-    throw new ApiError(422, "This ticket has no payment reference to refund");
+    throw new ApiError(
+      422,
+      "This ticket has no payment reference to refund",
+      null,
+      "NO_PAYMENT_REFERENCE",
+    );
   }
 
   const originalStatus = ticket.status;
@@ -53,7 +60,7 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
   );
 
   if (!claimedTicket) {
-    throw new ApiError(409, "Ticket was already refunded");
+    throw new ApiError(409, "Ticket was already refunded", null, "TICKET_ALREADY_REFUNDED");
   }
 
   try {

@@ -1,7 +1,12 @@
 const User = require("../models/user.model");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
+const Workspace = require("../models/workspace.model");
+const Membership = require("../models/membership.model");
+const ApiKey = require("../models/api-key.model");
 const { computePrimaryTicketPricing } = require("../services/pricing.service");
+const { generateApiKeyPair } = require("../utils/api-key");
+const { ALL_SCOPES } = require("../config/api-scopes");
 
 let counter = 0;
 const uniqueId = () => {
@@ -44,6 +49,7 @@ const createPaidTicket = async ({
   baseUnitPriceNaira = 10000,
   platformFeePercent = 5,
   feeMode = "absorbed_by_organizer",
+  ...overrides
 }) => {
   const pricingBreakdown = computePrimaryTicketPricing({
     baseUnitPriceNaira,
@@ -55,6 +61,7 @@ const createPaidTicket = async ({
   return EventTicket.create({
     eventId: event._id,
     organizerUserId: event.organizerUserId,
+    workspaceId: event.workspaceId,
     buyerUserId,
     quantity: 1,
     unitPriceNaira: pricingBreakdown.unitCheckoutPriceNaira,
@@ -78,7 +85,57 @@ const createPaidTicket = async ({
     barcodeValue: `barcode_${uniqueId()}`,
     paidAt: new Date(),
     verifiedAt: new Date(),
+    ...overrides,
   });
 };
 
-module.exports = { createUser, createEvent, createPaidTicket };
+const createWorkspace = async ({ ownerUserId, ...overrides }) => {
+  const workspace = await Workspace.create({
+    name: "Test Workspace",
+    slug: `test-workspace-${uniqueId()}`,
+    ownerUserId,
+    ...overrides,
+  });
+
+  await Membership.create({
+    workspaceId: workspace._id,
+    userId: ownerUserId,
+    role: "owner",
+    status: "active",
+  });
+
+  return workspace;
+};
+
+const createApiKey = async ({
+  workspaceId,
+  createdByUserId,
+  mode = "live",
+  scopes = ALL_SCOPES,
+  ...overrides
+}) => {
+  const { publishableKey, secretKey, secretKeyHash, secretKeyLastFour } =
+    generateApiKeyPair(mode);
+
+  const apiKey = await ApiKey.create({
+    workspaceId,
+    mode,
+    label: "Test key",
+    publishableKey,
+    secretKeyHash,
+    secretKeyLastFour,
+    scopes,
+    createdByUserId,
+    ...overrides,
+  });
+
+  return { apiKey, rawSecret: secretKey, publishableKey };
+};
+
+module.exports = {
+  createUser,
+  createEvent,
+  createPaidTicket,
+  createWorkspace,
+  createApiKey,
+};

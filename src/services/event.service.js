@@ -21,6 +21,7 @@ const FeaturedEventSlot = require("../models/featured-event-slot.model");
 const { normalizeMessagePayload } = require("../utils/chat-content");
 const { createNotification } = require("./notification.service");
 const { getFollowStatus } = require("./follow.service");
+const { getOrCreateDefaultWorkspace } = require("./workspace.service");
 const {
   generatePaystackReference,
   initializePaystackTransaction,
@@ -1192,11 +1193,9 @@ const createEvent = async ({ actorUserId, payload }) => {
     throw new ApiError(404, "Organizer account not found");
   }
 
-  let workspace = null;
-
-  if (payload.workspaceId) {
-    workspace = await requireWorkspaceAdmin(payload.workspaceId, actorUserId);
-  }
+  const workspace = payload.workspaceId
+    ? await requireWorkspaceAdmin(payload.workspaceId, actorUserId)
+    : await getOrCreateDefaultWorkspace(actorUserId);
 
   const startsAt = new Date(payload.startsAt);
   const recurrence = normalizeRecurrence(payload.recurrence, startsAt);
@@ -1241,7 +1240,7 @@ const createEvent = async ({ actorUserId, payload }) => {
 
   const created = await Event.create({
     organizerUserId: actorUserId,
-    workspaceId: workspace?._id ?? null,
+    workspaceId: workspace._id,
     eventCenterId: center?._id ?? null,
     name: payload.name,
     description: payload.description || "",
@@ -3419,11 +3418,21 @@ const initializeTicketPurchase = async ({
     );
 
     if (presaleQuantity <= 0) {
-      throw new ApiError(409, "Presale inventory is not available for this event");
+      throw new ApiError(
+        409,
+        "Presale inventory is not available for this event",
+        null,
+        "INSUFFICIENT_INVENTORY",
+      );
     }
 
     if (reserved + quantity > presaleQuantity) {
-      throw new ApiError(409, "Presale tickets are sold out for that quantity");
+      throw new ApiError(
+        409,
+        "Presale tickets are sold out for that quantity",
+        null,
+        "INSUFFICIENT_INVENTORY",
+      );
     }
   }
 
@@ -3432,13 +3441,20 @@ const initializeTicketPurchase = async ({
       throw new ApiError(
         409,
         `The ${selectedCategory.name} category is sold out for that quantity`,
+        null,
+        "INSUFFICIENT_INVENTORY",
       );
     }
   } else if (
     !isPresalePurchase &&
     reserved + quantity > Number(event.expectedTickets || 0)
   ) {
-    throw new ApiError(409, "Ticket capacity has been reached");
+    throw new ApiError(
+      409,
+      "Ticket capacity has been reached",
+      null,
+      "INSUFFICIENT_INVENTORY",
+    );
   }
 
   const dynamicPricing = getDynamicTicketPricing({
@@ -3551,6 +3567,7 @@ const initializeTicketPurchase = async ({
     return {
       requiresPayment: false,
       ticket: withClientTicketIdentity(primaryTicket),
+      ticketIds: issuedTickets.map((item) => String(item._id)),
       payment: null,
       paymentAttemptId: null,
       kind: "ticket_purchase",
@@ -3635,6 +3652,7 @@ const initializeTicketPurchase = async ({
   return {
     requiresPayment: true,
     ticket: withClientTicketIdentity(refreshedPrimaryTicket || primaryTicket),
+    ticketIds: issuedTickets.map((item) => String(item._id)),
     payment: buildCheckoutPayment(paymentAttempt),
     paymentAttemptId: String(paymentAttempt._id),
     kind: "ticket_purchase",
@@ -3949,9 +3967,15 @@ const parseTicketScanCode = (inputCode) => {
   };
 };
 
-const checkInTicket = async ({ actorUserId, payload }) => {
-  const parsed = parseTicketScanCode(payload.code);
-  const requestedEventId = payload.eventId || parsed.parsedEventId || null;
+/**
+ * Pure ticket lookup by scanned code — no permission check, no mutation.
+ * Shared by the dashboard check-in flow, the Developer Platform API
+ * check-in/verify flows, and anywhere else that needs "resolve a scan into
+ * a ticket+event".
+ */
+const findTicketByScanCode = async ({ code, eventId }) => {
+  const parsed = parseTicketScanCode(code);
+  const requestedEventId = eventId || parsed.parsedEventId || null;
   let ticketQuery = null;
 
   if (objectIdRegex.test(parsed.ticketCode)) {
@@ -3975,43 +3999,67 @@ const checkInTicket = async ({ actorUserId, payload }) => {
     .populate("usedByUserId", "fullName email avatarUrl title verificationBadge");
 
   if (!ticket) {
-    throw new ApiError(404, "Ticket not found");
+    throw new ApiError(404, "Ticket not found", null, "NOT_FOUND");
   }
 
   const event = ticket.eventId;
 
   if (!event) {
-    throw new ApiError(404, "Event not found for this ticket");
+    throw new ApiError(404, "Event not found for this ticket", null, "NOT_FOUND");
   }
 
   if (requestedEventId && String(event._id) !== String(requestedEventId)) {
-    throw new ApiError(409, "Scanned ticket does not belong to this event");
+    throw new ApiError(
+      409,
+      "Scanned ticket does not belong to this event",
+      null,
+      "TICKET_EVENT_MISMATCH",
+    );
   }
 
-  await ensureEventCanBeManagedBy(event, actorUserId);
+  return { ticket, event };
+};
 
+/**
+ * The actual check-in transition (status/window validation + mutation),
+ * shared by the dashboard path (after its own human ensureEventCanBeManagedBy
+ * permission check) and the Developer Platform API path (after its own
+ * workspace-ownership check) — the two entry points differ only in how they
+ * authorize the caller, not in what check-in means.
+ */
+const applyTicketCheckIn = async ({ ticket, event, checkedInByUserId }) => {
   if (event.status !== "published") {
     throw new ApiError(409, "Only published events can check in attendees");
   }
 
   if (ticket.status === "cancelled" || ticket.status === "expired") {
-    throw new ApiError(409, "This ticket is not active");
+    throw new ApiError(409, "This ticket is not active", null, "INVALID_TICKET");
   }
 
   if (ticket.status === "pending") {
-    throw new ApiError(409, "Ticket payment is still pending");
+    throw new ApiError(
+      409,
+      "Ticket payment is still pending",
+      null,
+      "TICKET_PAYMENT_PENDING",
+    );
   }
 
   const now = new Date();
   const window = toCheckInWindow(event, now);
 
   if (now < window.opensAt || now > window.closesAt) {
-    throw new ApiError(409, "Ticket check-in window is closed for this event", {
-      opensAt: window.opensAt,
-      closesAt: window.closesAt,
-      eventStartsAt: window.startsAt,
-      eventEndsAt: window.endsAt,
-    });
+    throw new ApiError(
+      409,
+      "Ticket check-in window is closed for this event",
+      {
+        opensAt: window.opensAt,
+        closesAt: window.closesAt,
+        eventStartsAt: window.startsAt,
+        eventEndsAt: window.endsAt,
+      },
+      "CHECKIN_WINDOW_CLOSED",
+    );
   }
 
   if (ticket.status === "used") {
@@ -4024,7 +4072,7 @@ const checkInTicket = async ({ actorUserId, payload }) => {
 
   ticket.status = "used";
   ticket.usedAt = now;
-  ticket.usedByUserId = actorUserId;
+  ticket.usedByUserId = checkedInByUserId;
   ticket.verifiedAt = ticket.verifiedAt || now;
   await ticket.save();
   await ticket.populate("usedByUserId", "fullName email avatarUrl title verificationBadge");
@@ -4034,6 +4082,88 @@ const checkInTicket = async ({ actorUserId, payload }) => {
     ticket,
     alreadyUsed: false,
     checkedInAt: ticket.usedAt,
+  };
+};
+
+const checkInTicket = async ({ actorUserId, payload }) => {
+  const { ticket, event } = await findTicketByScanCode({
+    code: payload.code,
+    eventId: payload.eventId,
+  });
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  return applyTicketCheckIn({ ticket, event, checkedInByUserId: actorUserId });
+};
+
+/**
+ * Developer Platform API check-in — same transition as the dashboard path,
+ * but authorized by API-key workspace ownership rather than a human
+ * membership role. There is no human actor, so the check-in is attributed
+ * to the ticket's resolved organizer (which API key performed it lives in
+ * ApiRequestLog, not on the ticket).
+ */
+const checkInTicketForWorkspace = async ({ workspaceId, payload }) => {
+  const { ticket, event } = await findTicketByScanCode({
+    code: payload.code,
+    eventId: payload.eventId,
+  });
+
+  if (String(ticket.workspaceId) !== String(workspaceId)) {
+    throw new ApiError(404, "Ticket not found", null, "NOT_FOUND");
+  }
+
+  return applyTicketCheckIn({
+    ticket,
+    event,
+    checkedInByUserId: event.organizerUserId,
+  });
+};
+
+/**
+ * Read-only counterpart to checkInTicketForWorkspace — resolves a scan to
+ * usability info without mutating anything.
+ */
+const verifyTicketByCode = async ({ code, eventId, workspaceId }) => {
+  const { ticket, event } = await findTicketByScanCode({ code, eventId });
+
+  if (String(ticket.workspaceId) !== String(workspaceId)) {
+    throw new ApiError(404, "Ticket not found", null, "NOT_FOUND");
+  }
+
+  const now = new Date();
+  const window = toCheckInWindow(event, now);
+  const isEventPublished = event.status === "published";
+  const isCancelledOrExpired = ticket.status === "cancelled" || ticket.status === "expired";
+  const isPending = ticket.status === "pending";
+  const isUsed = ticket.status === "used";
+  const isWindowOpen = now >= window.opensAt && now <= window.closesAt;
+
+  let reason = null;
+
+  if (!isEventPublished) {
+    reason = "EVENT_NOT_PUBLISHED";
+  } else if (isCancelledOrExpired) {
+    reason = "INVALID_TICKET";
+  } else if (isPending) {
+    reason = "TICKET_PAYMENT_PENDING";
+  } else if (isUsed) {
+    reason = "ALREADY_CHECKED_IN";
+  } else if (!isWindowOpen) {
+    reason = "CHECKIN_WINDOW_CLOSED";
+  }
+
+  const isUsable =
+    isEventPublished && !isCancelledOrExpired && !isPending && !isUsed && isWindowOpen;
+
+  return {
+    ticket,
+    event,
+    isUsable,
+    isUsed,
+    checkedInAt: ticket.usedAt || null,
+    reason,
+    window,
   };
 };
 
@@ -6775,6 +6905,10 @@ module.exports = {
   verifyTicketPayment,
   cancelTicketPayment,
   checkInTicket,
+  findTicketByScanCode,
+  applyTicketCheckIn,
+  checkInTicketForWorkspace,
+  verifyTicketByCode,
   listMyTickets,
   listOrganizerTicketSales,
   getTicketById,
@@ -6794,6 +6928,7 @@ module.exports = {
   deleteTicketTodo,
   listEventTickets,
   resolveOccurrenceWindow,
+  resolveEventSalePhase,
   normalizeRecurrence,
   expireAcceptedResaleOfferById,
   processPaystackWebhookEvent,
