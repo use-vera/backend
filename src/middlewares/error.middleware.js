@@ -10,6 +10,7 @@ const errorMiddleware = (error, _req, res, _next) => {
       success: false,
       message: error.message,
       details: error.details || null,
+      code: error.code || null,
     });
     return;
   }

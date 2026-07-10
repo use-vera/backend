@@ -50,6 +50,9 @@ const normalizePreferences = (preferences = {}) => ({
       ? preferences.themePreference
       : "system",
   shareActivityWithFollowers: preferences.shareActivityWithFollowers !== false,
+  preferredCategoryIds: Array.isArray(preferences.preferredCategoryIds)
+    ? preferences.preferredCategoryIds.map((id) => String(id))
+    : [],
 });
 
 const resolveWorkspaceByRef = async (workspaceRef) => {
@@ -256,6 +259,10 @@ const updateUserPreferences = async (userId, payload) => {
   if (payload.shareActivityWithFollowers !== undefined) {
     update["preferences.shareActivityWithFollowers"] =
       payload.shareActivityWithFollowers;
+  }
+
+  if (payload.preferredCategoryIds !== undefined) {
+    update["preferences.preferredCategoryIds"] = payload.preferredCategoryIds;
   }
 
   if (Object.keys(update).length === 0) {

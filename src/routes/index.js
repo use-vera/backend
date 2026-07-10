@@ -10,6 +10,7 @@ const fileRoutes = require("./file.routes");
 const subscriptionRoutes = require("./subscription.routes");
 const followRoutes = require("./follow.routes");
 const walletRoutes = require("./wallet.routes");
+const categoryRoutes = require("./category.routes");
 
 const router = express.Router();
 
@@ -24,5 +25,6 @@ router.use("/files", fileRoutes);
 router.use("/subscriptions", subscriptionRoutes);
 router.use("/follows", followRoutes);
 router.use("/wallet", walletRoutes);
+router.use("/categories", categoryRoutes);
 
 module.exports = router;

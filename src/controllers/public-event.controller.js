@@ -12,6 +12,10 @@ const listPublicEventsController = asyncHandler(async (req, res) => {
     to: req.query.to,
     ticketType: req.query.ticketType,
     state: req.query.state,
+    category: req.query.category,
+    nearLat: req.query.nearLat,
+    nearLng: req.query.nearLng,
+    nearRadiusKm: req.query.nearRadiusKm,
   });
 
   res.status(200).json({

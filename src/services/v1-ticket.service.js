@@ -17,10 +17,17 @@ const verifyTicketForWorkspace = async ({ workspaceId, code, eventId }) => {
   };
 };
 
-const checkInTicketForWorkspaceApi = async ({ workspaceId, code, eventId }) => {
+const checkInTicketForWorkspaceApi = async ({
+  workspaceId,
+  code,
+  eventId,
+  latitude,
+  longitude,
+  override,
+}) => {
   const result = await checkInTicketForWorkspace({
     workspaceId,
-    payload: { code, eventId },
+    payload: { code, eventId, latitude, longitude, override },
   });
 
   return {

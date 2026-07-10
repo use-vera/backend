@@ -2,6 +2,7 @@ const ApiError = require("../utils/api-error");
 const mongoose = require("mongoose");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
+const GeofenceOverrideLog = require("../models/geofence-override-log.model");
 const EventRating = require("../models/event-rating.model");
 const EventCenter = require("../models/event-center.model");
 const EventChatMessage = require("../models/event-chat-message.model");
@@ -16,6 +17,13 @@ const Membership = require("../models/membership.model");
 const Workspace = require("../models/workspace.model");
 const User = require("../models/user.model");
 const Follow = require("../models/follow.model");
+// Not referenced directly below, but event.service.js populates
+// Event.categoryIds — Mongoose only registers a model's schema once its
+// defining file is require()'d somewhere in the process, so this import is
+// required for that populate() to work in any entry point that doesn't
+// otherwise happen to load category.model.js first (e.g. scripts, tests).
+// eslint-disable-next-line no-unused-vars
+const Category = require("../models/category.model");
 const EventView = require("../models/event-view.model");
 const FeaturedEventSlot = require("../models/featured-event-slot.model");
 const { normalizeMessagePayload } = require("../utils/chat-content");
@@ -80,6 +88,21 @@ const normalizeWorkspaceRef = (workspaceRef) =>
   String(workspaceRef || "").trim().toLowerCase();
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const EARTH_RADIUS_KM = 6378.1;
+const EARTH_RADIUS_METERS = EARTH_RADIUS_KM * 1000;
+
+const toRadians = (degrees) => (degrees * Math.PI) / 180;
+
+const haversineDistanceMeters = (lat1, lng1, lat2, lng2) => {
+  const dLat = toRadians(lat2 - lat1);
+  const dLng = toRadians(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLng / 2) ** 2;
+
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.sqrt(a));
+};
 
 const buildPaginationMeta = ({ page, limit, totalItems }) => {
   const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / limit);
@@ -1242,6 +1265,7 @@ const createEvent = async ({ actorUserId, payload }) => {
     organizerUserId: actorUserId,
     workspaceId: workspace._id,
     eventCenterId: center?._id ?? null,
+    categoryIds: payload.categoryIds || [],
     name: payload.name,
     description: payload.description || "",
     imageUrl: payload.imageUrl || "",
@@ -1288,6 +1312,10 @@ const listEvents = async ({
   workspaceId,
   salePhase = "main",
   state,
+  category,
+  nearLat,
+  nearLng,
+  nearRadiusKm,
 }) => {
   const query = {
     status: "published",
@@ -1312,6 +1340,18 @@ const listEvents = async ({
     query.state = new RegExp(`^${escapeRegex(trimmedState)}$`, "i");
   }
 
+  if (category) {
+    query.categoryIds = category;
+  }
+
+  if (nearLat !== undefined && nearLng !== undefined) {
+    query.location = {
+      $geoWithin: {
+        $centerSphere: [[nearLng, nearLat], (nearRadiusKm || 25) / EARTH_RADIUS_KM],
+      },
+    };
+  }
+
   const trimmedSearch = String(search || "").trim();
 
   if (trimmedSearch) {
@@ -1330,6 +1370,7 @@ const listEvents = async ({
     )
     .populate("workspaceId", "name slug")
     .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt")
+    .populate("categoryIds", "name slug iconKey")
     .sort({ createdAt: -1 });
 
   const now = new Date();
@@ -2884,6 +2925,10 @@ const listPublicEvents = async ({
   to,
   ticketType = "all",
   state,
+  category,
+  nearLat,
+  nearLng,
+  nearRadiusKm,
 }) => {
   const query = {
     status: "published",
@@ -2903,6 +2948,18 @@ const listPublicEvents = async ({
     query.state = new RegExp(`^${escapeRegex(trimmedState)}$`, "i");
   }
 
+  if (category) {
+    query.categoryIds = category;
+  }
+
+  if (nearLat !== undefined && nearLng !== undefined) {
+    query.location = {
+      $geoWithin: {
+        $centerSphere: [[nearLng, nearLat], (nearRadiusKm || 25) / EARTH_RADIUS_KM],
+      },
+    };
+  }
+
   const trimmedSearch = String(search || "").trim();
 
   if (trimmedSearch) {
@@ -2920,6 +2977,7 @@ const listPublicEvents = async ({
       "eventCenterId",
       "name latitude longitude verified successfulEventsCount usageCount verifiedAt",
     )
+    .populate("categoryIds", "name slug iconKey")
     .sort({ createdAt: -1 });
 
   const now = new Date();
@@ -4027,7 +4085,14 @@ const findTicketByScanCode = async ({ code, eventId }) => {
  * workspace-ownership check) — the two entry points differ only in how they
  * authorize the caller, not in what check-in means.
  */
-const applyTicketCheckIn = async ({ ticket, event, checkedInByUserId }) => {
+const applyTicketCheckIn = async ({
+  ticket,
+  event,
+  checkedInByUserId,
+  latitude,
+  longitude,
+  override = false,
+}) => {
   if (event.status !== "published") {
     throw new ApiError(409, "Only published events can check in attendees");
   }
@@ -4062,12 +4127,55 @@ const applyTicketCheckIn = async ({ ticket, event, checkedInByUserId }) => {
     );
   }
 
+  // Already-checked-in tickets return early as a read-only "already used"
+  // response (no state change) — that idempotent re-scan must never fail
+  // geofence, so this check happens before the geofence enforcement below,
+  // which only applies to an actual pending -> used transition.
   if (ticket.status === "used") {
     return {
       ticket,
       alreadyUsed: true,
       checkedInAt: ticket.usedAt,
     };
+  }
+
+  // Only enforced when a location was actually captured — a client that
+  // couldn't get GPS (permission denied, indoors) is allowed through
+  // unchecked rather than being blocked by an absence of data. The block
+  // only fires when we HAVE a location and it says the scanner is too far.
+  if (latitude !== undefined && longitude !== undefined) {
+    const distanceMeters = haversineDistanceMeters(
+      latitude,
+      longitude,
+      event.latitude,
+      event.longitude,
+    );
+    const allowedRadiusMeters = event.geofenceRadiusMeters;
+    const outsideGeofence = distanceMeters > allowedRadiusMeters;
+
+    if (outsideGeofence && !override) {
+      throw new ApiError(
+        409,
+        `You appear to be ${Math.round(distanceMeters)}m from the event location`,
+        {
+          distanceMeters: Math.round(distanceMeters),
+          allowedRadiusMeters,
+        },
+        "OUTSIDE_GEOFENCE",
+      );
+    }
+
+    if (outsideGeofence && override) {
+      await GeofenceOverrideLog.create({
+        ticketId: ticket._id,
+        eventId: event._id,
+        checkedInByUserId,
+        distanceMeters: Math.round(distanceMeters),
+        allowedRadiusMeters,
+        latitude,
+        longitude,
+      });
+    }
   }
 
   ticket.status = "used";
@@ -4093,7 +4201,14 @@ const checkInTicket = async ({ actorUserId, payload }) => {
 
   await ensureEventCanBeManagedBy(event, actorUserId);
 
-  return applyTicketCheckIn({ ticket, event, checkedInByUserId: actorUserId });
+  return applyTicketCheckIn({
+    ticket,
+    event,
+    checkedInByUserId: actorUserId,
+    latitude: payload.latitude,
+    longitude: payload.longitude,
+    override: payload.override,
+  });
 };
 
 /**
@@ -4117,6 +4232,9 @@ const checkInTicketForWorkspace = async ({ workspaceId, payload }) => {
     ticket,
     event,
     checkedInByUserId: event.organizerUserId,
+    latitude: payload.latitude,
+    longitude: payload.longitude,
+    override: payload.override,
   });
 };
 

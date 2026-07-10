@@ -190,6 +190,14 @@ const eventSchema = new Schema(
       default: null,
       index: true,
     },
+    // Discovery taxonomy (Music/Sports/Comedy/...) — unrelated to
+    // ticketCategories below, which is a pricing-tier concept.
+    categoryIds: {
+      type: [Schema.Types.ObjectId],
+      ref: "Category",
+      default: [],
+      index: true,
+    },
     name: {
       type: String,
       required: true,
@@ -238,6 +246,18 @@ const eventSchema = new Schema(
       min: 20,
       max: 10000,
       default: 150,
+    },
+    location: {
+      type: {
+        type: String,
+        enum: ["Point"],
+        default: "Point",
+      },
+      coordinates: {
+        type: [Number],
+        required: true,
+        default: [0, 0],
+      },
     },
     startsAt: {
       type: Date,
@@ -344,6 +364,17 @@ const eventSchema = new Schema(
 
 eventSchema.index({ status: 1, startsAt: 1, createdAt: -1 });
 eventSchema.index({ organizerUserId: 1, createdAt: -1 });
+eventSchema.index({ location: "2dsphere" });
+
+// Kept in sync with latitude/longitude so geo queries ($geoWithin) have a
+// GeoJSON field to run against — latitude/longitude stay the source of
+// truth and are never removed, this is purely a derived mirror.
+eventSchema.pre("validate", function preValidate() {
+  this.location = {
+    type: "Point",
+    coordinates: [Number(this.longitude || 0), Number(this.latitude || 0)],
+  };
+});
 
 const Event = model("Event", eventSchema);
 

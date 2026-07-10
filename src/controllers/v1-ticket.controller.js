@@ -20,6 +20,9 @@ const checkInTicketController = asyncHandler(async (req, res) => {
     workspaceId: req.apiAuth.workspaceId,
     code: req.body.code,
     eventId: req.body.eventId,
+    latitude: req.body.latitude,
+    longitude: req.body.longitude,
+    override: req.body.override,
   });
 
   sendV1Success(res, { data: result });

@@ -127,6 +127,11 @@ const userSchema = new Schema(
         type: Boolean,
         default: true,
       },
+      preferredCategoryIds: {
+        type: [Schema.Types.ObjectId],
+        ref: "Category",
+        default: [],
+      },
     },
     verificationBadge: {
       type: verificationBadgeSchema,

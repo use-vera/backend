@@ -1,6 +1,8 @@
 const { z } = require("zod");
 
 const workspaceRefRegex = /^([a-fA-F0-9]{24}|[a-z0-9]+(?:-[a-z0-9]+)*)$/;
+const objectIdRegex = /^[a-fA-F0-9]{24}$/;
+const objectIdSchema = z.string().regex(objectIdRegex, "Invalid id format");
 const dateQuerySchema = z
   .string()
   .trim()
@@ -36,6 +38,7 @@ const updatePreferencesSchema = z
     weeklyDigest: z.boolean().optional(),
     themePreference: z.enum(["system", "light", "dark"]).optional(),
     shareActivityWithFollowers: z.boolean().optional(),
+    preferredCategoryIds: z.array(objectIdSchema).max(30).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one preferences field is required",

@@ -120,6 +120,7 @@ const createEventSchema = z
   .object({
     workspaceId: workspaceRefSchema.optional(),
     eventCenterId: objectIdSchema.optional(),
+    categoryIds: z.array(objectIdSchema).max(10).optional(),
     name: z.string().trim().min(2).max(140),
     description: z.string().trim().max(1200).optional(),
     imageUrl: z.string().trim().max(600).optional(),
@@ -337,6 +338,7 @@ const createEventSchema = z
 const updateEventSchema = z
   .object({
     eventCenterId: objectIdSchema.optional(),
+    categoryIds: z.array(objectIdSchema).max(10).optional(),
     name: z.string().trim().min(2).max(140).optional(),
     description: z.string().trim().max(1200).optional(),
     imageUrl: z.string().trim().max(600).optional(),
@@ -366,22 +368,39 @@ const updateEventSchema = z
     message: "At least one field is required",
   });
 
-const listEventsQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).max(100000).optional().default(1),
-  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
-  search: z.string().trim().max(120).optional(),
-  sort: z.enum(["dateAsc", "dateDesc", "newest"]).optional().default("dateAsc"),
-  filter: z
-    .enum(["upcoming", "this-week", "this-month", "all"])
-    .optional()
-    .default("upcoming"),
-  salePhase: z.enum(["all", "main", "presale"]).optional().default("main"),
-  from: dateStringSchema.optional(),
-  to: dateStringSchema.optional(),
-  ticketType: z.enum(["all", "free", "paid"]).optional().default("all"),
-  workspaceId: workspaceRefSchema.optional(),
-  state: z.string().trim().max(80).optional(),
-});
+const listEventsQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).max(100000).optional().default(1),
+    limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+    search: z.string().trim().max(120).optional(),
+    sort: z.enum(["dateAsc", "dateDesc", "newest"]).optional().default("dateAsc"),
+    filter: z
+      .enum(["upcoming", "this-week", "this-month", "all"])
+      .optional()
+      .default("upcoming"),
+    salePhase: z.enum(["all", "main", "presale"]).optional().default("main"),
+    from: dateStringSchema.optional(),
+    to: dateStringSchema.optional(),
+    ticketType: z.enum(["all", "free", "paid"]).optional().default("all"),
+    workspaceId: workspaceRefSchema.optional(),
+    state: z.string().trim().max(80).optional(),
+    category: objectIdSchema.optional(),
+    nearLat: z.coerce.number().min(-90).max(90).optional(),
+    nearLng: z.coerce.number().min(-180).max(180).optional(),
+    nearRadiusKm: z.coerce.number().min(1).max(200).optional().default(25),
+  })
+  .superRefine((value, ctx) => {
+    const hasLat = value.nearLat !== undefined;
+    const hasLng = value.nearLng !== undefined;
+
+    if (hasLat !== hasLng) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "nearLat and nearLng must be provided together",
+        path: [hasLat ? "nearLng" : "nearLat"],
+      });
+    }
+  });
 
 const listFeaturedEventsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).optional().default(8),
@@ -473,6 +492,9 @@ const verifyTicketPaymentSchema = z.object({
 const ticketCheckInSchema = z.object({
   code: z.string().trim().min(3).max(600),
   eventId: objectIdSchema.optional(),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+  override: z.boolean().optional().default(false),
 });
 
 const listMyTicketsQuerySchema = z.object({

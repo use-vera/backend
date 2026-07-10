@@ -83,6 +83,10 @@ const listEventsController = asyncHandler(async (req, res) => {
     ticketType: req.query.ticketType,
     workspaceId: req.query.workspaceId,
     state: req.query.state,
+    category: req.query.category,
+    nearLat: req.query.nearLat,
+    nearLng: req.query.nearLng,
+    nearRadiusKm: req.query.nearRadiusKm,
   });
 
   res.status(200).json({
