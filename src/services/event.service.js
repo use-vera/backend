@@ -532,6 +532,14 @@ const applyEventFilters = ({
     weekRangeEnd.setHours(23, 59, 59, 999);
   }
 
+  // A past event only ever surfaces in buyer-facing listings when the
+  // caller explicitly asked for a date range (e.g. searching a specific
+  // past day) — the "this-week"/"this-month" quick-filters and "all" are
+  // not explicit date queries in that sense, so they hide ended events too,
+  // same as "upcoming" already did. Without this, "All" showed every event
+  // ever, past or future.
+  const hasExplicitDateQuery = Boolean(rangeStart || rangeEnd);
+
   const filtered = [];
 
   for (const event of events) {
@@ -542,7 +550,7 @@ const applyEventFilters = ({
       continue;
     }
 
-    if (filter === "upcoming" && occurrence.endsAt < now) {
+    if (!hasExplicitDateQuery && occurrence.endsAt < now) {
       continue;
     }
 

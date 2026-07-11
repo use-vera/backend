@@ -2,6 +2,16 @@ const { listEvents, listPublicEvents } = require("../services/event.service");
 const { createCategory } = require("../services/category.service");
 const { createUser, createEvent } = require("./fixtures");
 
+// createEvent's fixture defaults to an already-ended event; these tests
+// care about category matching, not date filtering, so give every event a
+// genuinely future window — otherwise the "hide ended events" behavior
+// (confirmed via event-visibility.test.js) would exclude them regardless
+// of category.
+const upcoming = () => ({
+  startsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+  endsAt: new Date(Date.now() + 27 * 60 * 60 * 1000),
+});
+
 test("listEvents filters by a single category id", async () => {
   const organizer = await createUser();
   const music = await createCategory({ name: "Music A", iconKey: "music" });
@@ -11,11 +21,13 @@ test("listEvents filters by a single category id", async () => {
     organizerUserId: organizer._id,
     name: "Music Night",
     categoryIds: [music._id],
+    ...upcoming(),
   });
   await createEvent({
     organizerUserId: organizer._id,
     name: "Football Watch Party",
     categoryIds: [sports._id],
+    ...upcoming(),
   });
 
   const result = await listEvents({
@@ -36,6 +48,7 @@ test("an event tagged with multiple categories matches a filter on any one of th
     organizerUserId: organizer._id,
     name: "Music + Nightlife Crossover",
     categoryIds: [music._id, nightlife._id],
+    ...upcoming(),
   });
 
   const byMusic = await listEvents({
@@ -61,10 +74,12 @@ test("listPublicEvents (unauthenticated listing) also supports the category filt
     organizerUserId: organizer._id,
     name: "Stand-up Night",
     categoryIds: [comedy._id],
+    ...upcoming(),
   });
   await createEvent({
     organizerUserId: organizer._id,
     name: "Uncategorized Event",
+    ...upcoming(),
   });
 
   const result = await listPublicEvents({

@@ -7,6 +7,16 @@ const LEKKI = { latitude: 6.4474, longitude: 3.4687 };
 // reasonable "near me" radius.
 const ABUJA = { latitude: 9.0765, longitude: 7.4896 };
 
+// createEvent's fixture defaults to an already-ended event; these tests
+// care about geo matching, not date filtering, so give every event a
+// genuinely future window — otherwise the "hide ended events" behavior
+// (confirmed via event-visibility.test.js) would exclude them regardless
+// of location.
+const upcoming = () => ({
+  startsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+  endsAt: new Date(Date.now() + 27 * 60 * 60 * 1000),
+});
+
 test("near-me query includes an event within the radius and excludes one far away", async () => {
   const organizer = await createUser();
 
@@ -15,12 +25,14 @@ test("near-me query includes an event within the radius and excludes one far awa
     name: "Lekki Meetup",
     latitude: LEKKI.latitude,
     longitude: LEKKI.longitude,
+    ...upcoming(),
   });
   await createEvent({
     organizerUserId: organizer._id,
     name: "Abuja Conference",
     latitude: ABUJA.latitude,
     longitude: ABUJA.longitude,
+    ...upcoming(),
   });
 
   const result = await listPublicEvents({
@@ -44,6 +56,7 @@ test("near-me query respects a widened radius", async () => {
     name: "Just Outside Lekki",
     latitude: nearbyLat,
     longitude: LEKKI.longitude,
+    ...upcoming(),
   });
 
   const tight = await listPublicEvents({
@@ -71,12 +84,14 @@ test("omitting both nearLat and nearLng returns events regardless of location", 
     name: "Lekki Meetup",
     latitude: LEKKI.latitude,
     longitude: LEKKI.longitude,
+    ...upcoming(),
   });
   await createEvent({
     organizerUserId: organizer._id,
     name: "Abuja Conference",
     latitude: ABUJA.latitude,
     longitude: ABUJA.longitude,
+    ...upcoming(),
   });
 
   const result = await listPublicEvents({ filter: "all" });
