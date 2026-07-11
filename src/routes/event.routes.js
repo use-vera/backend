@@ -56,6 +56,7 @@ const { refundTicketSchema } = require("../validations/wallet.validation");
 const {
   createEventController,
   listEventsController,
+  listEventCountriesController,
   listFeaturedEventsController,
   getEventFeatureAvailabilityController,
   initializeEventFeatureController,
@@ -119,6 +120,7 @@ const router = express.Router();
 router.use(authMiddleware);
 
 router.get("/", validateQuery(listEventsQuerySchema), listEventsController);
+router.get("/countries", listEventCountriesController);
 router.get("/feed", validateQuery(listEventFeedQuerySchema), listEventFeedController);
 router.get(
   "/featured",

@@ -595,6 +595,37 @@ const applyEventFilters = ({
   return filtered;
 };
 
+// Powers the country filter's picker UI on both clients — only countries
+// with actual upcoming events show up, with counts, rather than a static
+// full-world list. Reuses applyEventFilters (not a raw $group) so the
+// counts respect the same "hide ended events, expand recurring occurrences"
+// rules every other listing already follows, instead of drifting from a
+// parallel aggregation that ignores recurrence.
+const listEventCountries = async () => {
+  const events = await Event.find(
+    { status: "published" },
+    "country startsAt endsAt recurrence",
+  );
+
+  const filtered = applyEventFilters({
+    events,
+    now: new Date(),
+    filter: "all",
+    sort: "dateAsc",
+  });
+
+  const counts = new Map();
+
+  for (const { event } of filtered) {
+    const country = event.country || "Other";
+    counts.set(country, (counts.get(country) || 0) + 1);
+  }
+
+  return Array.from(counts, ([country, count]) => ({ country, count })).sort(
+    (a, b) => b.count - a.count || a.country.localeCompare(b.country),
+  );
+};
+
 const getEventTicketStatsMap = async (eventIds) => {
   if (!eventIds.length) {
     return new Map();
@@ -1320,6 +1351,7 @@ const listEvents = async ({
   workspaceId,
   salePhase = "main",
   state,
+  country,
   category,
   nearLat,
   nearLng,
@@ -1346,6 +1378,12 @@ const listEvents = async ({
 
   if (trimmedState) {
     query.state = new RegExp(`^${escapeRegex(trimmedState)}$`, "i");
+  }
+
+  const trimmedCountry = String(country || "").trim();
+
+  if (trimmedCountry) {
+    query.country = new RegExp(`^${escapeRegex(trimmedCountry)}$`, "i");
   }
 
   if (category) {
@@ -2933,6 +2971,7 @@ const listPublicEvents = async ({
   to,
   ticketType = "all",
   state,
+  country,
   category,
   nearLat,
   nearLng,
@@ -2954,6 +2993,12 @@ const listPublicEvents = async ({
 
   if (trimmedState) {
     query.state = new RegExp(`^${escapeRegex(trimmedState)}$`, "i");
+  }
+
+  const trimmedCountry = String(country || "").trim();
+
+  if (trimmedCountry) {
+    query.country = new RegExp(`^${escapeRegex(trimmedCountry)}$`, "i");
   }
 
   if (category) {
@@ -7003,6 +7048,7 @@ module.exports = {
   searchEventCenters,
   listEvents,
   listPublicEvents,
+  listEventCountries,
   getPublicEventById,
   listEventFeed,
   listMyEvents,

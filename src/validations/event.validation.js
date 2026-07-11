@@ -384,6 +384,7 @@ const listEventsQuerySchema = z
     ticketType: z.enum(["all", "free", "paid"]).optional().default("all"),
     workspaceId: workspaceRefSchema.optional(),
     state: z.string().trim().max(80).optional(),
+    country: z.string().trim().max(80).optional(),
     category: objectIdSchema.optional(),
     nearLat: z.coerce.number().min(-90).max(90).optional(),
     nearLng: z.coerce.number().min(-180).max(180).optional(),

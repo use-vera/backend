@@ -1,4 +1,5 @@
 const { Schema, model } = require("mongoose");
+const { resolveCountryFromCoordinates } = require("../constants/country-bounding-boxes");
 
 const recurrenceSchema = new Schema(
   {
@@ -229,6 +230,13 @@ const eventSchema = new Schema(
       default: "",
       index: true,
     },
+    country: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: "",
+      index: true,
+    },
     latitude: {
       type: Number,
       required: true,
@@ -368,12 +376,15 @@ eventSchema.index({ location: "2dsphere" });
 
 // Kept in sync with latitude/longitude so geo queries ($geoWithin) have a
 // GeoJSON field to run against — latitude/longitude stay the source of
-// truth and are never removed, this is purely a derived mirror.
+// truth and are never removed, this is purely a derived mirror. `country`
+// is derived the same way, via a bounding-box lookup, so it never drifts
+// from the event's real coordinates and is never accepted as client input.
 eventSchema.pre("validate", function preValidate() {
   this.location = {
     type: "Point",
     coordinates: [Number(this.longitude || 0), Number(this.latitude || 0)],
   };
+  this.country = resolveCountryFromCoordinates(this.latitude, this.longitude);
 });
 
 const Event = model("Event", eventSchema);

@@ -3,6 +3,7 @@ const { refundTicket } = require("../services/refund.service");
 const {
   createEvent,
   listEvents,
+  listEventCountries,
   listActiveFeaturedEventsForToday,
   searchEventCenters,
   listMyEvents,
@@ -83,6 +84,7 @@ const listEventsController = asyncHandler(async (req, res) => {
     ticketType: req.query.ticketType,
     workspaceId: req.query.workspaceId,
     state: req.query.state,
+    country: req.query.country,
     category: req.query.category,
     nearLat: req.query.nearLat,
     nearLng: req.query.nearLng,
@@ -92,6 +94,16 @@ const listEventsController = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: "Events fetched",
+    data: result,
+  });
+});
+
+const listEventCountriesController = asyncHandler(async (req, res) => {
+  const result = await listEventCountries();
+
+  res.status(200).json({
+    success: true,
+    message: "Event countries fetched",
     data: result,
   });
 });
@@ -815,6 +827,7 @@ const deleteTicketTodoController = asyncHandler(async (req, res) => {
 module.exports = {
   createEventController,
   listEventsController,
+  listEventCountriesController,
   listEventFeedController,
   listFeaturedEventsController,
   getEventFeatureAvailabilityController,
