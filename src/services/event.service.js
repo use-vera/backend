@@ -4407,6 +4407,19 @@ const listMyTickets = async ({
   ]);
 
   const now = new Date();
+  const populatedEventIds = items
+    .filter(
+      (ticket) =>
+        ticket.eventId &&
+        typeof ticket.eventId === "object" &&
+        "_id" in ticket.eventId,
+    )
+    .map((ticket) => ticket.eventId._id);
+  const ratingsMap = await getEventRatingsSummaryMap(
+    populatedEventIds,
+    actorUserId,
+  );
+
   const normalizedItems = items.map((ticket) => {
     if (
       !ticket.eventId ||
@@ -4429,6 +4442,7 @@ const listMyTickets = async ({
         ...event,
         nextOccurrenceAt: occurrence.startsAt,
         nextOccurrenceEndsAt: occurrence.endsAt,
+        myRating: ratingsMap.get(String(event._id))?.myRating ?? null,
       },
     };
   });
