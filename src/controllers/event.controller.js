@@ -20,6 +20,7 @@ const {
   listMyTickets,
   listOrganizerTicketSales,
   getTicketById,
+  reportTicketHolderLocation,
   listEventTickets,
   listEventResaleMarketplace,
   createTicketResale,
@@ -609,6 +610,21 @@ const getTicketController = asyncHandler(async (req, res) => {
   });
 });
 
+const reportTicketLocationController = asyncHandler(async (req, res) => {
+  const result = await reportTicketHolderLocation({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    latitude: req.body.latitude,
+    longitude: req.body.longitude,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Location updated",
+    data: result,
+  });
+});
+
 const listEventTicketsController = asyncHandler(async (req, res) => {
   const result = await listEventTickets({
     eventId: req.params.eventId,
@@ -862,6 +878,7 @@ module.exports = {
   listMyTicketsController,
   listOrganizerTicketSalesController,
   getTicketController,
+  reportTicketLocationController,
   listEventTicketsController,
   listEventResaleMarketplaceController,
   createTicketResaleController,

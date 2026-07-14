@@ -39,8 +39,6 @@ const verifyTicketSchema = z.object({
 const checkInTicketSchema = z.object({
   code: z.string().trim().min(1),
   eventId: objectIdSchema.optional(),
-  latitude: z.number().min(-90).max(90).optional(),
-  longitude: z.number().min(-180).max(180).optional(),
   override: z.boolean().optional().default(false),
 });
 

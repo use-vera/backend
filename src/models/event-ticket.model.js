@@ -145,6 +145,42 @@ const eventTicketSchema = new Schema(
       ref: "User",
       default: null,
     },
+    // Self-reported by the ticket holder's own device (e.g. when they open
+    // their ticket pass) — used by check-in geofencing instead of the
+    // scanning staff member's location. Never accepted from anyone but the
+    // ticket's buyerUserId.
+    holderLastLatitude: {
+      type: Number,
+      min: -90,
+      max: 90,
+      default: null,
+    },
+    holderLastLongitude: {
+      type: Number,
+      min: -180,
+      max: 180,
+      default: null,
+    },
+    holderLocationUpdatedAt: {
+      type: Date,
+      default: null,
+    },
+    // Snapshot of whichever holder location (if any) was used for the
+    // geofence decision at the moment this ticket was actually checked in —
+    // kept permanently for the Footprints check-in detail map, independent
+    // of holderLast* which keeps changing as the holder's location updates.
+    checkInLatitude: {
+      type: Number,
+      min: -90,
+      max: 90,
+      default: null,
+    },
+    checkInLongitude: {
+      type: Number,
+      min: -180,
+      max: 180,
+      default: null,
+    },
     resaleStatus: {
       type: String,
       enum: ["none", "listed", "offer-accepted"],

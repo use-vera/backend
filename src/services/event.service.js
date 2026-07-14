@@ -1097,13 +1097,17 @@ const withClientTicketIdentity = (ticket) => {
   };
 };
 
-const ensureEventCanBeManagedBy = async (event, userId) => {
+const canUserManageEvent = async (event, userId) => {
+  if (!userId) {
+    return false;
+  }
+
   if (toIdString(event.organizerUserId) === toIdString(userId)) {
-    return;
+    return true;
   }
 
   if (!event.workspaceId) {
-    throw new ApiError(403, "You cannot manage this event");
+    return false;
   }
 
   const membership = await Membership.findOne({
@@ -1112,7 +1116,11 @@ const ensureEventCanBeManagedBy = async (event, userId) => {
     status: "active",
   });
 
-  if (!membership || roleWeight[membership.role] < roleWeight.admin) {
+  return Boolean(membership && roleWeight[membership.role] >= roleWeight.admin);
+};
+
+const ensureEventCanBeManagedBy = async (event, userId) => {
+  if (!(await canUserManageEvent(event, userId))) {
     throw new ApiError(403, "You cannot manage this event");
   }
 };
@@ -2941,10 +2949,13 @@ const getEventById = async ({ eventId, actorUserId }) => {
     now,
   });
 
+  const canManageCheckIns = await canUserManageEvent(event, actorUserId);
+
   return {
     event: mappedEvent,
     myTickets: myTickets.map((ticket) => withClientTicketIdentity(ticket)),
     organizerProfile,
+    canManageCheckIns,
     featuredEvents: featuredEvents
       .filter((item) => String(item._id) !== String(event._id))
       .slice(0, 6),
@@ -4138,12 +4149,17 @@ const findTicketByScanCode = async ({ code, eventId }) => {
  * workspace-ownership check) — the two entry points differ only in how they
  * authorize the caller, not in what check-in means.
  */
+// How long a ticket holder's self-reported location (from opening their
+// ticket pass) stays trustworthy enough to enforce the geofence with. Long
+// enough to cover "opened their ticket a few minutes before the gate,"
+// short enough that a stale location from hours/days ago isn't treated as
+// meaningful. Documented judgment call, not derived from any spec.
+const HOLDER_LOCATION_STALE_MS = 30 * 60 * 1000;
+
 const applyTicketCheckIn = async ({
   ticket,
   event,
   checkedInByUserId,
-  latitude,
-  longitude,
   override = false,
 }) => {
   if (event.status !== "published") {
@@ -4192,14 +4208,33 @@ const applyTicketCheckIn = async ({
     };
   }
 
-  // Only enforced when a location was actually captured — a client that
-  // couldn't get GPS (permission denied, indoors) is allowed through
-  // unchecked rather than being blocked by an absence of data. The block
-  // only fires when we HAVE a location and it says the scanner is too far.
-  if (latitude !== undefined && longitude !== undefined) {
+  // Geofencing is based on the TICKET HOLDER's own last self-reported
+  // location (captured when they open their ticket pass), not the scanning
+  // staff member's device — checking whether staff are near the venue they
+  // work at is not a meaningful fraud signal. Only enforced when that
+  // location exists and is fresh; a holder who never opened their ticket
+  // recently (or denied location permission) is allowed through unchecked
+  // rather than being blocked by an absence of data.
+  let holderLatitude = null;
+  let holderLongitude = null;
+  const holderLocationAgeMs = ticket.holderLocationUpdatedAt
+    ? now.getTime() - new Date(ticket.holderLocationUpdatedAt).getTime()
+    : null;
+  const hasFreshHolderLocation =
+    holderLocationAgeMs !== null &&
+    holderLocationAgeMs <= HOLDER_LOCATION_STALE_MS &&
+    ticket.holderLastLatitude !== null &&
+    ticket.holderLastLatitude !== undefined &&
+    ticket.holderLastLongitude !== null &&
+    ticket.holderLastLongitude !== undefined;
+
+  if (hasFreshHolderLocation) {
+    holderLatitude = ticket.holderLastLatitude;
+    holderLongitude = ticket.holderLastLongitude;
+
     const distanceMeters = haversineDistanceMeters(
-      latitude,
-      longitude,
+      holderLatitude,
+      holderLongitude,
       event.latitude,
       event.longitude,
     );
@@ -4209,7 +4244,7 @@ const applyTicketCheckIn = async ({
     if (outsideGeofence && !override) {
       throw new ApiError(
         409,
-        `You appear to be ${Math.round(distanceMeters)}m from the event location`,
+        `The ticket holder appears to be ${Math.round(distanceMeters)}m from the event location`,
         {
           distanceMeters: Math.round(distanceMeters),
           allowedRadiusMeters,
@@ -4225,8 +4260,8 @@ const applyTicketCheckIn = async ({
         checkedInByUserId,
         distanceMeters: Math.round(distanceMeters),
         allowedRadiusMeters,
-        latitude,
-        longitude,
+        latitude: holderLatitude,
+        longitude: holderLongitude,
       });
     }
   }
@@ -4235,6 +4270,8 @@ const applyTicketCheckIn = async ({
   ticket.usedAt = now;
   ticket.usedByUserId = checkedInByUserId;
   ticket.verifiedAt = ticket.verifiedAt || now;
+  ticket.checkInLatitude = holderLatitude;
+  ticket.checkInLongitude = holderLongitude;
   await ticket.save();
   await ticket.populate("usedByUserId", "fullName email avatarUrl title verificationBadge");
   await recomputeVerificationForEvent({ event });
@@ -4258,8 +4295,6 @@ const checkInTicket = async ({ actorUserId, payload }) => {
     ticket,
     event,
     checkedInByUserId: actorUserId,
-    latitude: payload.latitude,
-    longitude: payload.longitude,
     override: payload.override,
   });
 };
@@ -4285,8 +4320,6 @@ const checkInTicketForWorkspace = async ({ workspaceId, payload }) => {
     ticket,
     event,
     checkedInByUserId: event.organizerUserId,
-    latitude: payload.latitude,
-    longitude: payload.longitude,
     override: payload.override,
   });
 };
@@ -4554,6 +4587,33 @@ const listOrganizerTicketSales = async ({
       totalItems,
     }),
   };
+};
+
+// Self-reported by the ticket's own owner (e.g. when they open their ticket
+// pass to be scanned) — feeds check-in geofencing (applyTicketCheckIn) in
+// place of the scanning staff member's location.
+const reportTicketHolderLocation = async ({
+  ticketId,
+  actorUserId,
+  latitude,
+  longitude,
+}) => {
+  const ticket = await EventTicket.findById(ticketId);
+
+  if (!ticket) {
+    throw new ApiError(404, "Ticket not found");
+  }
+
+  if (toIdString(ticket.buyerUserId) !== toIdString(actorUserId)) {
+    throw new ApiError(403, "You can only report your own location");
+  }
+
+  ticket.holderLastLatitude = latitude;
+  ticket.holderLastLongitude = longitude;
+  ticket.holderLocationUpdatedAt = new Date();
+  await ticket.save();
+
+  return { success: true };
 };
 
 const getTicketById = async ({ ticketId, actorUserId }) => {
@@ -7098,6 +7158,8 @@ module.exports = {
   listMyTickets,
   listOrganizerTicketSales,
   getTicketById,
+  reportTicketHolderLocation,
+  canUserManageEvent,
   listEventResaleMarketplace,
   createTicketResale,
   cancelTicketResale,

@@ -25,6 +25,7 @@ const {
   initializeResalePurchaseSchema,
   verifyTicketPaymentSchema,
   ticketCheckInSchema,
+  reportTicketLocationSchema,
   listMyTicketsQuerySchema,
   listOrganizerTicketSalesQuerySchema,
   listEventRatingsQuerySchema,
@@ -77,6 +78,7 @@ const {
   listMyTicketsController,
   listOrganizerTicketSalesController,
   getTicketController,
+  reportTicketLocationController,
   listEventTicketsController,
   listEventResaleMarketplaceController,
   createTicketResaleController,
@@ -169,6 +171,12 @@ router.get(
   "/tickets/:ticketId",
   validateParams(ticketIdParamsSchema),
   getTicketController,
+);
+router.patch(
+  "/tickets/:ticketId/location",
+  validateParams(ticketIdParamsSchema),
+  validateBody(reportTicketLocationSchema),
+  reportTicketLocationController,
 );
 router.post(
   "/tickets/:ticketId/verify",

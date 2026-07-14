@@ -493,9 +493,12 @@ const verifyTicketPaymentSchema = z.object({
 const ticketCheckInSchema = z.object({
   code: z.string().trim().min(3).max(600),
   eventId: objectIdSchema.optional(),
-  latitude: z.number().min(-90).max(90).optional(),
-  longitude: z.number().min(-180).max(180).optional(),
   override: z.boolean().optional().default(false),
+});
+
+const reportTicketLocationSchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
 });
 
 const listMyTicketsQuerySchema = z.object({
@@ -669,6 +672,7 @@ module.exports = {
   initializeResalePurchaseSchema,
   verifyTicketPaymentSchema,
   ticketCheckInSchema,
+  reportTicketLocationSchema,
   listMyTicketsQuerySchema,
   listOrganizerTicketSalesQuerySchema,
   listEventRatingsQuerySchema,
