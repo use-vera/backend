@@ -168,6 +168,8 @@ const listWalletTransactions = async ({
 
   const [items, totalItems] = await Promise.all([
     WalletTransaction.find(query)
+      .populate("eventId", "name imageUrl address startsAt")
+      .populate("ticketId", "ticketCode attendeeName")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNumber)
@@ -181,6 +183,22 @@ const listWalletTransactions = async ({
   };
 };
 
+const getWalletTransactionById = async ({ transactionId, organizerUserId }) => {
+  const transaction = await WalletTransaction.findById(transactionId)
+    .populate("eventId", "name imageUrl address startsAt endsAt")
+    .populate("ticketId", "ticketCode attendeeName");
+
+  if (!transaction) {
+    throw new ApiError(404, "Transaction not found");
+  }
+
+  if (String(transaction.organizerUserId) !== String(organizerUserId)) {
+    throw new ApiError(403, "You cannot view this transaction");
+  }
+
+  return transaction;
+};
+
 module.exports = {
   nairaToKobo,
   buildPaginationMeta,
@@ -188,4 +206,5 @@ module.exports = {
   creditTicketSale,
   getWalletSummary,
   listWalletTransactions,
+  getWalletTransactionById,
 };

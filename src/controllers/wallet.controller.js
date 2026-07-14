@@ -2,6 +2,7 @@ const asyncHandler = require("../utils/async-handler");
 const {
   getWalletSummary,
   listWalletTransactions,
+  getWalletTransactionById,
 } = require("../services/wallet.service");
 const {
   triggerManualSettlement,
@@ -40,6 +41,19 @@ const listWalletTransactionsController = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: "Wallet transactions fetched",
+    data: result,
+  });
+});
+
+const getWalletTransactionController = asyncHandler(async (req, res) => {
+  const result = await getWalletTransactionById({
+    transactionId: req.params.transactionId,
+    organizerUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Transaction fetched",
     data: result,
   });
 });
@@ -156,6 +170,7 @@ const applyChargebackController = asyncHandler(async (req, res) => {
 module.exports = {
   getWalletSummaryController,
   listWalletTransactionsController,
+  getWalletTransactionController,
   runSettlementController,
   listBanksController,
   previewPayoutAccountController,

@@ -3,10 +3,12 @@ const authMiddleware = require("../middlewares/auth.middleware");
 const requireAdmin = require("../middlewares/require-admin.middleware");
 const {
   validateBody,
+  validateParams,
   validateQuery,
 } = require("../middlewares/validate.middleware");
 const {
   listWalletTransactionsQuerySchema,
+  transactionIdParamsSchema,
   upsertPayoutAccountSchema,
   requestWithdrawalSchema,
   listWithdrawalsQuerySchema,
@@ -15,6 +17,7 @@ const {
 const {
   getWalletSummaryController,
   listWalletTransactionsController,
+  getWalletTransactionController,
   runSettlementController,
   listBanksController,
   previewPayoutAccountController,
@@ -35,6 +38,11 @@ router.get(
   "/transactions",
   validateQuery(listWalletTransactionsQuerySchema),
   listWalletTransactionsController,
+);
+router.get(
+  "/transactions/:transactionId",
+  validateParams(transactionIdParamsSchema),
+  getWalletTransactionController,
 );
 router.post("/settlement/run", requireAdmin, runSettlementController);
 

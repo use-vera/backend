@@ -21,6 +21,10 @@ const listWalletTransactionsQuerySchema = z.object({
     .default("all"),
 });
 
+const transactionIdParamsSchema = z.object({
+  transactionId: z.string().trim().regex(objectIdRegex, "Invalid transaction id"),
+});
+
 const upsertPayoutAccountSchema = z.object({
   bankCode: z.string().trim().min(1).max(20),
   accountNumber: z.string().trim().regex(/^\d{10}$/, "Account number must be 10 digits"),
@@ -48,6 +52,7 @@ const refundTicketSchema = z.object({
 module.exports = {
   objectIdRegex,
   listWalletTransactionsQuerySchema,
+  transactionIdParamsSchema,
   upsertPayoutAccountSchema,
   requestWithdrawalSchema,
   listWithdrawalsQuerySchema,
