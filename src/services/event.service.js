@@ -340,6 +340,14 @@ const getTicketCategoryTotals = (categories) => {
 
 const getNextRecurringOccurrenceStart = (event, referenceAt) => {
   const startsAt = new Date(event.startsAt);
+  const endsAt = new Date(event.endsAt);
+  // How long each occurrence lasts — an occurrence is only skipped once it
+  // has fully ENDED, not as soon as its start time passes. Without this, a
+  // recurring event that's currently live (started today, not yet over)
+  // gets treated as ineligible the moment its start time ticks by, and the
+  // search jumps to the next recurrence date instead of surfacing today's
+  // still-ongoing occurrence.
+  const duration = Math.max(1, endsAt.getTime() - startsAt.getTime());
   const recurrence = normalizeRecurrence(event.recurrence, startsAt);
   const reference = new Date(referenceAt);
   const until = recurrence.endsOn ? endOfDay(recurrence.endsOn) : null;
@@ -376,8 +384,9 @@ const getNextRecurringOccurrenceStart = (event, referenceAt) => {
       }
 
       const candidate = withBaseTime(day, startsAt);
+      const candidateEnd = new Date(candidate.getTime() + duration);
 
-      if (candidate < startsAt || candidate < reference) {
+      if (candidate < startsAt || candidateEnd < reference) {
         continue;
       }
 
@@ -414,8 +423,9 @@ const getNextRecurringOccurrenceStart = (event, referenceAt) => {
         new Date(monthDate.getFullYear(), monthDate.getMonth(), day),
         startsAt,
       );
+      const candidateEnd = new Date(candidate.getTime() + duration);
 
-      if (candidate < startsAt || candidate < reference) {
+      if (candidate < startsAt || candidateEnd < reference) {
         continue;
       }
 
@@ -464,8 +474,9 @@ const getNextRecurringOccurrenceStart = (event, referenceAt) => {
       }
 
       const candidate = withBaseTime(dayDate, startsAt);
+      const candidateEnd = new Date(candidate.getTime() + duration);
 
-      if (candidate < startsAt || candidate < reference) {
+      if (candidate < startsAt || candidateEnd < reference) {
         continue;
       }
 
