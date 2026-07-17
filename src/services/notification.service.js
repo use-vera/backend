@@ -352,4 +352,6 @@ module.exports = {
   listUserNotifications,
   markNotificationRead,
   markAllNotificationsRead,
+  sendExpoPushMessages,
+  isExpoPushToken,
 };

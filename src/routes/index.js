@@ -11,6 +11,7 @@ const subscriptionRoutes = require("./subscription.routes");
 const followRoutes = require("./follow.routes");
 const walletRoutes = require("./wallet.routes");
 const categoryRoutes = require("./category.routes");
+const emergencyRoutes = require("./emergency.routes");
 
 const router = express.Router();
 
@@ -26,5 +27,6 @@ router.use("/subscriptions", subscriptionRoutes);
 router.use("/follows", followRoutes);
 router.use("/wallet", walletRoutes);
 router.use("/categories", categoryRoutes);
+router.use("/emergencies", emergencyRoutes);
 
 module.exports = router;

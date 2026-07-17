@@ -7186,6 +7186,8 @@ module.exports = {
   updateTicketTodo,
   deleteTicketTodo,
   listEventTickets,
+  haversineDistanceMeters,
+  toCheckInWindow,
   resolveOccurrenceWindow,
   resolveEventSalePhase,
   normalizeRecurrence,

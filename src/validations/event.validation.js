@@ -108,6 +108,15 @@ const ticketSalesSchema = z.object({
   presalePriceNaira: z.coerce.number().min(0).optional(),
 });
 
+const emergencyConfigSchema = z.object({
+  enabled: z.boolean().optional().default(true),
+  autoAlertsEnabled: z.boolean().optional().default(true),
+  confidenceThreshold: z.coerce.number().min(40).max(100).optional().default(70),
+  reportCooldownSeconds: z.coerce.number().int().min(15).max(600).optional().default(60),
+  geofenceRadiusMeters: z.coerce.number().min(20).max(10000).nullable().optional().default(null),
+  sensitivity: z.coerce.number().min(0.5).max(2).optional().default(1),
+});
+
 const ticketCategorySchema = z.object({
   categoryId: z.string().trim().min(1).max(60).optional(),
   name: z.string().trim().min(1).max(60),
@@ -362,6 +371,7 @@ const updateEventSchema = z
     pricing: pricingSchema.optional(),
     resale: resalePolicySchema.optional(),
     sales: ticketSalesSchema.optional(),
+    emergency: emergencyConfigSchema.optional(),
     status: z.enum(["draft", "published", "cancelled"]).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {

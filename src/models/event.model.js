@@ -139,6 +139,45 @@ const salesSchema = new Schema(
   { _id: false },
 );
 
+const emergencySchema = new Schema(
+  {
+    enabled: {
+      type: Boolean,
+      default: true,
+    },
+    autoAlertsEnabled: {
+      type: Boolean,
+      default: true,
+    },
+    confidenceThreshold: {
+      type: Number,
+      min: 40,
+      max: 100,
+      default: 70,
+    },
+    reportCooldownSeconds: {
+      type: Number,
+      min: 15,
+      max: 600,
+      default: 60,
+    },
+    // null inherits the event's own geofenceRadiusMeters.
+    geofenceRadiusMeters: {
+      type: Number,
+      min: 20,
+      max: 10000,
+      default: null,
+    },
+    sensitivity: {
+      type: Number,
+      min: 0.5,
+      max: 2,
+      default: 1,
+    },
+  },
+  { _id: false },
+);
+
 const ticketCategorySchema = new Schema(
   {
     name: {
@@ -357,6 +396,17 @@ const eventSchema = new Schema(
       enum: ["draft", "published", "cancelled"],
       default: "published",
       index: true,
+    },
+    emergency: {
+      type: emergencySchema,
+      default: () => ({
+        enabled: true,
+        autoAlertsEnabled: true,
+        confidenceThreshold: 70,
+        reportCooldownSeconds: 60,
+        geofenceRadiusMeters: null,
+        sensitivity: 1,
+      }),
     },
   },
   {

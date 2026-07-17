@@ -15,6 +15,18 @@ const emitEventChatMessageCreated = ({ eventId, message }) => {
   });
 };
 
+const emitEventEmergencyAlert = ({ eventId, emergency, message }) => {
+  if (!io || !eventId || !emergency) {
+    return;
+  }
+
+  io.to(`event:${eventId}`).emit("event:emergency:alert", {
+    eventId: String(eventId),
+    emergency,
+    message,
+  });
+};
+
 const emitDirectMessageCreated = ({
   conversationId,
   message,
@@ -57,6 +69,7 @@ const emitUserNotificationCreated = ({ userId, notification }) => {
 module.exports = {
   setSocketServer,
   emitEventChatMessageCreated,
+  emitEventEmergencyAlert,
   emitDirectMessageCreated,
   emitUserNotificationCreated,
 };

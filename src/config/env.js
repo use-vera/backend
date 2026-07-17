@@ -73,6 +73,8 @@ const env = {
     process.env.PRESENCE_MONITOR_TICK_MS,
     60 * 1000,
   ),
+  emergencyMonitorEnabled: toBoolean(process.env.EMERGENCY_MONITOR_ENABLED, true),
+  emergencyMonitorTickMs: toNumber(process.env.EMERGENCY_MONITOR_TICK_MS, 15 * 1000),
   eventReminderEnabled: toBoolean(process.env.EVENT_REMINDER_ENABLED, true),
   eventReminderTickMs: toNumber(
     process.env.EVENT_REMINDER_TICK_MS,
