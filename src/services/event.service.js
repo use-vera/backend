@@ -28,6 +28,7 @@ const EventView = require("../models/event-view.model");
 const FeaturedEventSlot = require("../models/featured-event-slot.model");
 const { normalizeMessagePayload } = require("../utils/chat-content");
 const { createNotification } = require("./notification.service");
+const { notifyEventCancelled } = require("./event-cancellation-notification.service");
 const { getFollowStatus } = require("./follow.service");
 const { getOrCreateDefaultWorkspace } = require("./workspace.service");
 const {
@@ -1618,6 +1619,14 @@ const ensureEventParticipant = async ({ event, actorUserId }) => {
     return;
   }
 
+  // Workspace admins/owners manage events they didn't personally create —
+  // the client already treats them as community participants (canManageOrg
+  // gates the same UI), so the backend must agree or they hit this error
+  // the moment they try to use reminders/chat/posts on a teammate's event.
+  if (await canUserManageEvent(event, actorUserId)) {
+    return;
+  }
+
   throw new ApiError(403, "Only attendees or organizers can access this action");
 };
 
@@ -2529,7 +2538,7 @@ const mapEventPostForResponse = ({ post, likedByMe = false }) => {
 const getPostWithAccess = async ({ postId, actorUserId, requireParticipant = false }) => {
   const post = await EventPost.findById(postId)
     .populate("authorUserId", "fullName email avatarUrl title verificationBadge")
-    .populate("eventId", "name imageUrl address organizerUserId status eventCenterId");
+    .populate("eventId", "name imageUrl address organizerUserId workspaceId status eventCenterId");
 
   if (!post || !post.eventId) {
     throw new ApiError(404, "Post not found");
@@ -2543,7 +2552,8 @@ const getPostWithAccess = async ({ postId, actorUserId, requireParticipant = fal
     (await userHasEventTicket({
       eventId: event._id,
       userId: actorUserId,
-    }));
+    })) ||
+    (await canUserManageEvent(event, actorUserId));
 
   if (post.visibility === "ticket-holders" && !isParticipant) {
     throw new ApiError(403, "This post is only available to ticket holders");
@@ -2722,6 +2732,78 @@ const listActiveFeaturedEventsForToday = async ({ actorUserId, limit = 8 }) => {
       myTicket: myTicketMap.get(key),
       organizerBadge: organizerBadgeMap.get(toIdString(entry.event.organizerUserId)),
       followingInterestCount: followingInterestMap.get(key) || 0,
+      now,
+    });
+  });
+
+  // Preserve slot purchase order (first-purchased shown first).
+  const orderIndex = new Map(eventIds.map((id, index) => [id, index]));
+  mapped.sort(
+    (a, b) => (orderIndex.get(String(a._id)) ?? 0) - (orderIndex.get(String(b._id)) ?? 0),
+  );
+
+  return mapped.slice(0, safeLimit);
+};
+
+// Public counterpart of listActiveFeaturedEventsForToday — same
+// FeaturedEventSlot lookup and event-filtering pipeline, but composed
+// without any actor-scoped maps (no myTicket, no followingInterestCount),
+// matching listPublicEvents' no-actor-data guarantee for this router.
+const listPublicFeaturedEvents = async ({ limit = 8 } = {}) => {
+  const safeLimit = Math.min(20, Math.max(1, Number(limit) || 8));
+  const today = todayDateKey();
+
+  const slots = await FeaturedEventSlot.find({
+    date: today,
+    status: "active",
+  })
+    .sort({ createdAt: 1 })
+    .limit(50);
+
+  const eventIds = [...new Set(slots.map((slot) => String(slot.eventId)))];
+
+  if (!eventIds.length) {
+    return [];
+  }
+
+  const rawEvents = await Event.find({
+    _id: { $in: eventIds },
+    status: "published",
+  })
+    .populate(
+      "organizerUserId",
+      "fullName email avatarUrl title verificationBadge",
+    )
+    .populate("workspaceId", "name slug")
+    .populate("eventCenterId", "name latitude longitude verified successfulEventsCount usageCount verifiedAt");
+
+  const now = new Date();
+  const filtered = applyEventFilters({
+    events: rawEvents,
+    now,
+    filter: "upcoming",
+    sort: "dateAsc",
+  });
+
+  await refreshEventCentersForEvents(filtered.map((entry) => entry.event));
+
+  const filteredEventIds = filtered.map((item) => item.event._id);
+  const organizerIds = filtered.map((item) => toIdString(item.event.organizerUserId));
+  const [statsMap, ratingsMap, organizerBadgeMap] = await Promise.all([
+    getEventTicketStatsMap(filteredEventIds),
+    getEventRatingsSummaryMap(filteredEventIds, undefined),
+    getOrganizerVerificationMap(organizerIds),
+  ]);
+
+  const mapped = filtered.map((entry) => {
+    const key = String(entry.event._id);
+
+    return mapEventForResponse({
+      event: entry.event,
+      occurrence: entry.occurrence,
+      stats: statsMap.get(key),
+      ratings: ratingsMap.get(key),
+      organizerBadge: organizerBadgeMap.get(toIdString(entry.event.organizerUserId)),
       now,
     });
   });
@@ -3417,6 +3499,79 @@ const deleteEvent = async ({ eventId, actorUserId }) => {
   return {
     eventId: String(event._id),
     deleted: true,
+  };
+};
+
+/**
+ * Cancels an event and immediately notifies everyone affected — organizer
+ * confirmation + a "you'll be refunded shortly" notice to every paid/used
+ * ticket holder. The actual refunds are NOT run inline here (each is a real
+ * Paystack call; doing hundreds synchronously inside this request risks a
+ * timeout) — event-cancellation-refund-monitor.service.js sweeps them
+ * shortly after, the same "bounded batch, resumable across ticks" pattern
+ * checkout-session-monitor.service.js already uses for bulk work.
+ */
+const cancelEvent = async ({ eventId, actorUserId, reason = "" }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeEditedBy(event, actorUserId);
+
+  if (event.status === "cancelled") {
+    throw new ApiError(409, "This event is already cancelled");
+  }
+
+  const now = new Date();
+  event.status = "cancelled";
+  event.cancelledAt = now;
+  event.cancellationReason = reason;
+  event.refundSweepCompletedAt = null;
+  await event.save();
+
+  const affectedTickets = await EventTicket.find({
+    eventId: event._id,
+    status: { $in: ["paid", "used"] },
+  }).select("buyerUserId totalPriceNaira");
+
+  const recipientUserIds = [
+    ...new Set(affectedTickets.map((ticket) => toIdString(ticket.buyerUserId))),
+  ].filter(Boolean);
+
+  const totalRefundNaira = affectedTickets.reduce(
+    (sum, ticket) => sum + Number(ticket.totalPriceNaira || 0),
+    0,
+  );
+
+  const attendeeMessage = reason
+    ? `${event.name} was cancelled: ${reason}. You'll be refunded shortly.`
+    : `${event.name} was cancelled. You'll be refunded shortly.`;
+
+  await notifyEventCancelled({
+    recipientUserIds,
+    title: "Event cancelled",
+    message: attendeeMessage,
+    data: { eventId: String(event._id) },
+  });
+
+  const organizerId = toIdString(event.organizerUserId);
+
+  if (organizerId) {
+    await createNotification({
+      userId: organizerId,
+      type: "event.cancelled.confirmation",
+      title: "Event cancelled",
+      message: `${event.name} was cancelled. ${affectedTickets.length} attendee(s) will be refunded a total of ₦${totalRefundNaira.toLocaleString()}.`,
+      data: { eventId: String(event._id) },
+    });
+  }
+
+  return {
+    event,
+    affectedTicketCount: affectedTickets.length,
+    totalRefundNaira,
   };
 };
 
@@ -7133,6 +7288,7 @@ module.exports = {
   searchEventCenters,
   listEvents,
   listPublicEvents,
+  listPublicFeaturedEvents,
   listEventCountries,
   getPublicEventById,
   listEventFeed,
@@ -7158,6 +7314,7 @@ module.exports = {
   createEventPostComment,
   updateEvent,
   deleteEvent,
+  cancelEvent,
   initializeTicketPurchase,
   verifyTicketPayment,
   cancelTicketPayment,

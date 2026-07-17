@@ -13,6 +13,7 @@ const {
   rateEvent,
   updateEvent,
   deleteEvent,
+  cancelEvent,
   initializeTicketPurchase,
   verifyTicketPayment,
   cancelTicketPayment,
@@ -492,6 +493,20 @@ const deleteEventController = asyncHandler(async (req, res) => {
   });
 });
 
+const cancelEventController = asyncHandler(async (req, res) => {
+  const result = await cancelEvent({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+    reason: req.body.reason,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Event cancelled",
+    data: result,
+  });
+});
+
 const initializeTicketPurchaseController = asyncHandler(async (req, res) => {
   const result = await initializeTicketPurchase({
     eventId: req.params.eventId,
@@ -870,6 +885,7 @@ module.exports = {
   createEventPostCommentController,
   updateEventController,
   deleteEventController,
+  cancelEventController,
   initializeTicketPurchaseController,
   verifyTicketPaymentController,
   cancelTicketPaymentController,

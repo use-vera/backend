@@ -75,6 +75,14 @@ const env = {
   ),
   emergencyMonitorEnabled: toBoolean(process.env.EMERGENCY_MONITOR_ENABLED, true),
   emergencyMonitorTickMs: toNumber(process.env.EMERGENCY_MONITOR_TICK_MS, 15 * 1000),
+  eventCancellationRefundMonitorEnabled: toBoolean(
+    process.env.EVENT_CANCELLATION_REFUND_MONITOR_ENABLED,
+    true,
+  ),
+  eventCancellationRefundMonitorTickMs: toNumber(
+    process.env.EVENT_CANCELLATION_REFUND_MONITOR_TICK_MS,
+    60 * 1000,
+  ),
   eventReminderEnabled: toBoolean(process.env.EVENT_REMINDER_ENABLED, true),
   eventReminderTickMs: toNumber(
     process.env.EVENT_REMINDER_TICK_MS,

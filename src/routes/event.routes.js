@@ -8,6 +8,7 @@ const {
 const {
   createEventSchema,
   updateEventSchema,
+  cancelEventSchema,
   listEventsQuerySchema,
   listFeaturedEventsQuerySchema,
   featureAvailabilityQuerySchema,
@@ -70,6 +71,7 @@ const {
   rateEventController,
   updateEventController,
   deleteEventController,
+  cancelEventController,
   initializeTicketPurchaseController,
   verifyTicketPaymentController,
   cancelTicketPaymentController,
@@ -406,6 +408,12 @@ router.delete(
   "/:eventId",
   validateParams(eventIdParamsSchema),
   deleteEventController,
+);
+router.patch(
+  "/:eventId/cancel",
+  validateParams(eventIdParamsSchema),
+  validateBody(cancelEventSchema),
+  cancelEventController,
 );
 router.post(
   "/:eventId/tickets/initialize",

@@ -9,6 +9,7 @@ const {
 } = require("../validations/event.validation");
 const {
   listPublicEventsController,
+  listPublicFeaturedEventsController,
   listPublicEventCountriesController,
   getPublicEventController,
 } = require("../controllers/public-event.controller");
@@ -20,6 +21,7 @@ const {
 const router = express.Router();
 
 router.get("/", validateQuery(listEventsQuerySchema), listPublicEventsController);
+router.get("/featured", listPublicFeaturedEventsController);
 router.get("/countries", listPublicEventCountriesController);
 router.get(
   "/:eventId",

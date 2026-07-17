@@ -397,6 +397,23 @@ const eventSchema = new Schema(
       default: "published",
       index: true,
     },
+    cancelledAt: {
+      type: Date,
+      default: null,
+    },
+    cancellationReason: {
+      type: String,
+      trim: true,
+      maxlength: 300,
+      default: "",
+    },
+    // Set by event-cancellation-refund-monitor.service.js once a cancelled
+    // event has zero remaining paid/used tickets — lets the monitor skip a
+    // fully-settled cancellation instead of rescanning it every tick.
+    refundSweepCompletedAt: {
+      type: Date,
+      default: null,
+    },
     emergency: {
       type: emergencySchema,
       default: () => ({

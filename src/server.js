@@ -23,6 +23,9 @@ const {
 const {
   startEmergencyConfidenceMonitor,
 } = require("./services/emergency-confidence-monitor.service");
+const {
+  startEventCancellationRefundMonitor,
+} = require("./services/event-cancellation-refund-monitor.service");
 const { initializeSocketServer } = require("./realtime/socket");
 
 const startServer = async () => {
@@ -44,6 +47,7 @@ const startServer = async () => {
       startWalletSettlementMonitor();
       startCheckoutSessionMonitor();
       startEmergencyConfidenceMonitor();
+      startEventCancellationRefundMonitor();
     });
   } catch (error) {
     // eslint-disable-next-line no-console

@@ -1,6 +1,7 @@
 const asyncHandler = require("../utils/async-handler");
 const {
   listPublicEvents,
+  listPublicFeaturedEvents,
   getPublicEventById,
   listEventCountries,
 } = require("../services/event.service");
@@ -30,6 +31,18 @@ const listPublicEventsController = asyncHandler(async (req, res) => {
   });
 });
 
+const listPublicFeaturedEventsController = asyncHandler(async (req, res) => {
+  const result = await listPublicFeaturedEvents({
+    limit: req.query.limit,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Featured events fetched",
+    data: result,
+  });
+});
+
 const listPublicEventCountriesController = asyncHandler(async (req, res) => {
   const result = await listEventCountries();
 
@@ -54,6 +67,7 @@ const getPublicEventController = asyncHandler(async (req, res) => {
 
 module.exports = {
   listPublicEventsController,
+  listPublicFeaturedEventsController,
   listPublicEventCountriesController,
   getPublicEventController,
 };

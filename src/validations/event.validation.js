@@ -372,11 +372,18 @@ const updateEventSchema = z
     resale: resalePolicySchema.optional(),
     sales: ticketSalesSchema.optional(),
     emergency: emergencyConfigSchema.optional(),
-    status: z.enum(["draft", "published", "cancelled"]).optional(),
+    // "cancelled" is intentionally excluded — cancellation has real side
+    // effects (refunds, attendee/organizer notifications) and only goes
+    // through the dedicated cancelEventSchema/PATCH .../cancel endpoint.
+    status: z.enum(["draft", "published"]).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one field is required",
   });
+
+const cancelEventSchema = z.object({
+  reason: z.string().trim().max(300).optional().default(""),
+});
 
 const listEventsQuerySchema = z
   .object({
@@ -664,6 +671,7 @@ const rateEventSchema = z.object({
 module.exports = {
   createEventSchema,
   updateEventSchema,
+  cancelEventSchema,
   listEventsQuerySchema,
   listFeaturedEventsQuerySchema,
   featureAvailabilityQuerySchema,
