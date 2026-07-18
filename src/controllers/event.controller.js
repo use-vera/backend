@@ -587,6 +587,7 @@ const listMyTicketsController = asyncHandler(async (req, res) => {
     limit: req.query.limit,
     search: req.query.search,
     status: req.query.status,
+    purchaseBatchId: req.query.purchaseBatchId,
   });
 
   res.status(200).json({

@@ -526,6 +526,12 @@ const listMyTicketsQuerySchema = z.object({
     .enum(["all", "pending", "paid", "used", "cancelled", "expired", "refunded"])
     .optional()
     .default("all"),
+  // When set, returns every ticket from one purchase (see
+  // paymentMetadata.purchaseBatchId) regardless of status — lets the
+  // post-checkout success screen show every code from a multi-quantity
+  // purchase, not just the primary ticket the purchase/verify response
+  // itself carries.
+  purchaseBatchId: z.string().trim().max(120).optional(),
 });
 
 const listOrganizerTicketSalesQuerySchema = listMyTicketsQuerySchema;

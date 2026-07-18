@@ -3856,6 +3856,7 @@ const initializeTicketPurchase = async ({
       requiresPayment: false,
       ticket: withClientTicketIdentity(primaryTicket),
       ticketIds: issuedTickets.map((item) => String(item._id)),
+      purchaseBatchId,
       payment: null,
       paymentAttemptId: null,
       kind: "ticket_purchase",
@@ -3941,6 +3942,7 @@ const initializeTicketPurchase = async ({
     requiresPayment: true,
     ticket: withClientTicketIdentity(refreshedPrimaryTicket || primaryTicket),
     ticketIds: issuedTickets.map((item) => String(item._id)),
+    purchaseBatchId,
     payment: buildCheckoutPayment(paymentAttempt),
     paymentAttemptId: String(paymentAttempt._id),
     kind: "ticket_purchase",
@@ -3970,11 +3972,14 @@ const verifyTicketPayment = async ({
     throw new ApiError(403, "You can only verify your own ticket");
   }
 
+  const purchaseBatchId = String(ticket.paymentMetadata?.purchaseBatchId || "").trim() || null;
+
   if (ticket.status === "paid" || ticket.status === "used") {
     return {
       ticket,
       paymentStatus: "success",
       alreadyVerified: true,
+      purchaseBatchId,
     };
   }
 
@@ -4013,6 +4018,7 @@ const verifyTicketPayment = async ({
       ticket,
       paymentStatus: "success",
       alreadyVerified: true,
+      purchaseBatchId,
     };
   }
 
@@ -4098,6 +4104,7 @@ const verifyTicketPayment = async ({
     ticket,
     paymentStatus: paidStatus,
     alreadyVerified: false,
+    purchaseBatchId,
   };
 };
 
@@ -4543,6 +4550,7 @@ const listMyTickets = async ({
   limit = 20,
   search,
   status = "all",
+  purchaseBatchId,
 }) => {
   const pageNumber = Math.max(1, Number(page) || 1);
   const limitNumber = Math.min(50, Math.max(1, Number(limit) || 20));
@@ -4550,7 +4558,18 @@ const listMyTickets = async ({
     buyerUserId: actorUserId,
   };
 
-  if (status === "all") {
+  const trimmedPurchaseBatchId = String(purchaseBatchId || "").trim();
+
+  if (trimmedPurchaseBatchId) {
+    // A batch filter means "show me everything from this purchase" — skip
+    // the default status narrowing so a ticket isn't dropped from its own
+    // post-checkout confirmation over a status technicality.
+    query["paymentMetadata.purchaseBatchId"] = trimmedPurchaseBatchId;
+
+    if (status !== "all") {
+      query.status = status;
+    }
+  } else if (status === "all") {
     query.status = { $in: ["paid", "used", "refunded"] };
   } else {
     query.status = status;
