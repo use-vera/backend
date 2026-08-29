@@ -6,7 +6,7 @@ jest.mock("../services/paystack.service", () => ({
     reference: "mock_reference",
   }),
   // getCheckoutSession opportunistically calls verifyTicketPayment, which
-  // hits this — "pending" (not "success") keeps the ticket unpaid so the
+  // hits this. "pending" (not "success") keeps the ticket unpaid so the
   // opportunistic sync's expected 402 path is exercised instead of a real
   // network call.
   verifyPaystackTransaction: jest.fn().mockResolvedValue({ status: "pending" }),
@@ -51,7 +51,7 @@ test("free event checkout session purchases instantly and credits the organizer 
   expect(session.ticketIds).toHaveLength(1);
 
   const wallet = await OrganizerWallet.findOne({ organizerUserId: organizer._id });
-  // Free ticket credits ₦0 — the point of this assertion is that crediting
+  // Free ticket credits ₦0. The point of this assertion is that crediting
   // ran at all (a wallet row exists) via the reused purchase pipeline.
   expect(wallet).not.toBeNull();
 });
@@ -216,7 +216,7 @@ test("concurrent checkout sessions against a near-full event don't crash or corr
 
   // The underlying capacity check + ticket insert in initializeTicketPurchase
   // are not atomic (a pre-existing gap in the shared purchase pipeline,
-  // inherited here rather than fixed in this pass — see checkout-session
+  // inherited here rather than fixed in this pass. See checkout-session
   // service comments). This test only asserts the system stays consistent
   // under concurrency, NOT that oversell is prevented.
   const attempts = await Promise.allSettled(

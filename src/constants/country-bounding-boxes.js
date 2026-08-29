@@ -1,11 +1,11 @@
 // Approximate rectangular bounding boxes used to resolve an event's country
 // from its stored latitude/longitude for filtering purposes. These are NOT
-// precise polygon borders — they're simple lat/lng rectangles, cheap to
+// precise polygon borders. They're simple lat/lng rectangles, cheap to
 // evaluate and consistent with the $geoWithin-style geo queries already used
 // elsewhere in this codebase (near-me search). Two deliberate trade-offs:
 //   1. Coverage is comprehensive for Africa plus a short list of diaspora
 //      hubs (UK, US, Canada, UAE) this Nigeria-centric platform plausibly
-//      sees events in — not all ~195 UN member states. Coordinates for
+//      sees events in. Not all ~195 UN member states. Coordinates for
 //      lesser-covered countries would carry real accuracy risk if hand
 //      authored from memory, so the list intentionally stops there.
 //   2. Any coordinate outside every listed box resolves to "Other" rather

@@ -23,7 +23,7 @@ const createApiKey = async ({ workspaceRef, actorUserId, label, mode, scopes }) 
 
   return {
     ...json,
-    // Shown exactly once — never retrievable again after this response.
+    // Shown exactly once. Never retrievable again after this response.
     secretKey,
   };
 };
@@ -60,7 +60,7 @@ const updateApiKey = async ({ workspaceRef, actorUserId, keyId, updates }) => {
 
 /**
  * "live"/"test" is baked into the actual pk_/sk_ prefix, not just a status
- * flag — so promoting a key can't just flip a field, it has to regenerate
+ * flag, so promoting a key can't just flip a field, it has to regenerate
  * the key material. Keeps the same record (_id, label, scopes, usage
  * history) and issues a fresh secret, which the caller must re-reveal to
  * the user exactly like a brand-new key.
@@ -93,7 +93,7 @@ const upgradeApiKeyToLive = async ({ workspaceRef, actorUserId, keyId }) => {
 
   return {
     ...apiKey.toJSON(),
-    // Shown exactly once — never retrievable again after this response.
+    // Shown exactly once. Never retrievable again after this response.
     secretKey,
   };
 };

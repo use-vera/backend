@@ -10,7 +10,7 @@ const OUTSIDE = { latitude: 9.0765, longitude: 7.4896 }; // Abuja, ~500km away
 
 // Geofencing now reads the TICKET HOLDER's self-reported location (set via
 // reportTicketHolderLocation when they open their ticket pass), not
-// anything passed in the check-in payload — these helpers simulate that
+// anything passed in the check-in payload. These helpers simulate that
 // prior report directly on the ticket document.
 const setHolderLocation = async (ticket, coords, { ageMs = 0 } = {}) => {
   ticket.holderLastLatitude = coords.latitude;

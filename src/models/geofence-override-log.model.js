@@ -2,7 +2,7 @@ const { Schema, model } = require("mongoose");
 
 /**
  * Audit trail for check-ins an organizer confirmed anyway despite being
- * outside the event's geofence. Minimal by design — one row per override,
+ * outside the event's geofence. Minimal by design, one row per override,
  * self-prunes via the TTL index below.
  */
 const geofenceOverrideLogSchema = new Schema(

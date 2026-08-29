@@ -5,7 +5,7 @@ const objectIdSchema = z.string().regex(objectIdRegex, "Invalid id format");
 
 // Single source of truth for category icons. Each key must have a matching
 // entry in both clients' icon maps (mobile: shared/constants/category-icons.ts,
-// web: web/lib/category-icons.ts) — adding a key here without updating both
+// web: web/lib/category-icons.ts). Adding a key here without updating both
 // client maps means that icon silently falls back to "other" on old clients.
 const CATEGORY_ICON_KEYS = [
   "music",

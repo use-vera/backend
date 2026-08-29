@@ -2,7 +2,7 @@ const { Schema, model } = require("mongoose");
 
 /**
  * Minimal security/audit trail for /v1 requests (request logging, IP
- * logging, audit logs) — deliberately NOT the full usage-analytics
+ * logging, audit logs). Deliberately NOT the full usage-analytics
  * dashboard (request counts, response-time percentiles, rate-limit usage),
  * which is a deferred Developer Portal feature. Rows self-prune via the TTL
  * index below so this can never silently grow into that.

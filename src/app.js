@@ -17,7 +17,7 @@ const app = express();
 
 // So req.ip reflects the real client address (used by the Developer
 // Platform's API request audit log) rather than a reverse proxy's address,
-// when this backend runs behind one. Single-hop default — adjust if the
+// when this backend runs behind one. Single-hop default. Adjust if the
 // deployment topology sits behind more than one proxy.
 app.set("trust proxy", 1);
 

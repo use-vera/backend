@@ -1,7 +1,7 @@
 const ApiRequestLog = require("../models/api-request-log.model");
 
 /**
- * Minimal security/audit request log for /v1 — fire-and-forget, never
+ * Minimal security/audit request log for /v1. Fire-and-forget, never
  * blocks or fails the actual response. Must run after apiKeyAuthMiddleware
  * so req.apiAuth is populated.
  */

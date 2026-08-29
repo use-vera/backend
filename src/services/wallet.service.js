@@ -36,13 +36,13 @@ const getOrCreateWallet = async (organizerUserId, session = null) =>
 /**
  * Credits an organizer's wallet for one paid ticket. Called from both
  * finalizeTicketPurchasePayment (paid tickets) and the instant free/dev-
- * bypass issuance path in initializeTicketPurchase — both must pass a
+ * bypass issuance path in initializeTicketPurchase. Both must pass a
  * session so the wallet writes commit atomically with the ticket write.
  *
  * Idempotency: checked via a pre-check read BEFORE attempting any write,
  * not a catch-after-insert. MongoDB transactions can't "catch and continue"
- * past a failed write — any operation error poisons the whole transaction
- * for commit even if the app catches the rejection — so a genuine
+ * past a failed write. Any operation error poisons the whole transaction
+ * for commit even if the app catches the rejection, so a genuine
  * simultaneous race (verify + webhook both passing the pre-check before
  * either commits) still throws here, but that's fine: it aborts this
  * attempt and withMongoTransaction's caller retries with a fresh
@@ -125,7 +125,7 @@ const creditTicketSale = async ({ ticket, session, event: providedEvent = null }
     { session },
   );
 
-  // Informational fee line only — already netted into the ticket_sale
+  // Informational fee line only, already netted into the ticket_sale
   // credit above, so this does not touch pendingBalanceKobo again.
   await WalletTransaction.create(
     [

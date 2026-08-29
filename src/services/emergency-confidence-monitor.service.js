@@ -18,7 +18,7 @@ const isDbConnected = () => mongoose.connection.readyState === 1;
 
 /**
  * Confidence must decay over wall-clock time even when no new reports
- * arrive — without this periodic tick, a score would only ever update on
+ * arrive, without this periodic tick, a score would only ever update on
  * report arrival and could get stuck at a stale high value forever once
  * reports stop coming in, which is wrong (recency-decayed signals need a
  * clock, not just events).

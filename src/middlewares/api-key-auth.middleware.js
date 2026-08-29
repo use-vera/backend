@@ -43,7 +43,7 @@ const apiKeyAuthMiddleware = async (req, _res, next) => {
       keyType,
     };
 
-    // Fire-and-forget — a lastUsedAt write failure must never block the
+    // Fire-and-forget. A lastUsedAt write failure must never block the
     // actual request.
     ApiKey.updateOne({ _id: apiKey._id }, { $set: { lastUsedAt: new Date() } }).catch(
       () => {},

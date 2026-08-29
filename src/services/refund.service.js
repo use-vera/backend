@@ -11,7 +11,7 @@ const toIdString = (value) => String(value?._id || value || "");
 /**
  * Refunds a paid ticket: returns the attendee's money via Paystack, flips
  * the ticket to "refunded", and reverses whatever the organizer's wallet
- * was credited for this sale — from pendingBalanceKobo if the sale hasn't
+ * was credited for this sale, from pendingBalanceKobo if the sale hasn't
  * settled yet, or from availableBalanceKobo (going into owingBalanceKobo if
  * insufficient) if it has.
  */
@@ -51,7 +51,7 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
 
   // Atomically claim the ticket for refunding BEFORE calling Paystack, so a
   // concurrent double-request can only ever trigger one real provider
-  // refund call — the loser gets a clean 409 instead of a second charge
+  // refund call. The loser gets a clean 409 instead of a second charge
   // reversal.
   const claimedTicket = await EventTicket.findOneAndUpdate(
     { _id: ticketId, status: { $in: ["paid", "used"] } },
@@ -69,7 +69,7 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
       amountKobo: nairaToKobo(ticket.totalPriceNaira),
     });
   } catch (error) {
-    // Provider call failed — release the claim so this is retryable rather
+    // Provider call failed. Release the claim so this is retryable rather
     // than leaving the ticket stuck "refunded" with no money returned.
     await EventTicket.updateOne(
       { _id: ticketId, status: "refunded" },
@@ -87,7 +87,7 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
 
     if (!saleTransaction) {
       // Wallet crediting wasn't enabled when this ticket was bought (or the
-      // event had zero organizerNet) — nothing to reverse on the ledger.
+      // event had zero organizerNet). Nothing to reverse on the ledger.
       return;
     }
 
@@ -136,7 +136,7 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
     // paid/used -> refunded) already guarantees this ticket can be
     // refunded exactly once, so `refund:${ticketId}` can never legitimately
     // collide. Catching a duplicate-key error here wouldn't save this
-    // transaction anyway — MongoDB poisons a transaction for commit the
+    // transaction anyway. MongoDB poisons a transaction for commit the
     // moment any operation inside it fails, regardless of whether the app
     // catches that rejection.
     await WalletTransaction.create(

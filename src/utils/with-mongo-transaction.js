@@ -25,7 +25,7 @@ const backoffMs = (attempt) => {
  * Runs `fn` inside a manually-managed Mongoose session transaction (not
  * session.withTransaction(), whose own internal retry loop was observed
  * hanging well past 30s when two transactions raced on the same unique
- * idempotencyKey — see git history). Managing start/commit/abort directly
+ * idempotencyKey. See git history). Managing start/commit/abort directly
  * means only this function's own bounded retry applies, with exponential
  * backoff + jitter for write-hotspot documents like a single organizer's
  * wallet under many concurrent ticket purchases.

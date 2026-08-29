@@ -7,7 +7,7 @@ const {
   createTransferRecipient,
 } = require("./paystack.service");
 
-// Bank lists change essentially never — cache for the process lifetime
+// Bank lists change essentially never. Cache for the process lifetime
 // instead of hitting Paystack on every payout-setup screen open.
 let cachedBanks = null;
 
@@ -21,7 +21,7 @@ const listNigerianBanks = async () => {
   // Paystack's /bank list mixes NUBAN entries with mobile-money/USSD
   // channels that resolveBankAccount/createTransferRecipient (both hardcode
   // type: "nuban") can't actually resolve or pay out to, and sometimes
-  // repeats the same bank code across channel types — both of which broke
+  // repeats the same bank code across channel types. Both of which broke
   // the picker (unresolvable accounts, and duplicate React keys). Restrict
   // to NUBAN and de-dupe by code so every listed bank is both unique and
   // actually usable.
@@ -44,7 +44,7 @@ const listNigerianBanks = async () => {
 };
 
 /**
- * Resolve-only, no save — lets the client show the account holder's real
+ * Resolve-only, no save. Lets the client show the account holder's real
  * name back to the user for confirmation before anything is persisted.
  */
 const previewPayoutAccount = async ({ bankCode, accountNumber }) => {
@@ -62,7 +62,7 @@ const previewPayoutAccount = async ({ bankCode, accountNumber }) => {
 
 /**
  * Paystack's account-resolve call already confirms the account number
- * belongs to a real bank account with that name — treated as sufficient
+ * belongs to a real bank account with that name. Treated as sufficient
  * verification for this pass (no separate KYC document upload step).
  */
 const upsertPayoutAccount = async ({ organizerUserId, bankCode, accountNumber }) => {
@@ -115,7 +115,7 @@ const deletePayoutAccount = async ({ organizerUserId }) => {
   if (hasActiveWithdrawal) {
     throw new ApiError(
       409,
-      "You have a withdrawal in progress on this account — wait for it to finish before removing it",
+      "You have a withdrawal in progress on this account. Wait for it to finish before removing it",
     );
   }
 

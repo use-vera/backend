@@ -1,6 +1,6 @@
 /**
  * Settlement delay per organizer trust tier. Changing a delay is a one-line
- * edit + redeploy here — the settlement job's logic never changes shape,
+ * edit + redeploy here. The settlement job's logic never changes shape,
  * it just reads whatever this map says for the organizer's payoutTier.
  */
 const SETTLEMENT_DELAY_HOURS_BY_TIER = {

@@ -33,7 +33,7 @@ const categorySchema = new Schema(
       type: Number,
       default: 0,
     },
-    // Soft-hide only — never hard-deleted, since events may already
+    // Soft-hide only. Never hard-deleted, since events may already
     // reference a category by id via Event.categoryIds.
     isActive: {
       type: Boolean,

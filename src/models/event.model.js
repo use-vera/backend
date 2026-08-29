@@ -204,6 +204,21 @@ const ticketCategorySchema = new Schema(
       min: 0,
       default: 0,
     },
+    // Per-tier sale window. Null on either side means "no bound", so a tier
+    // with neither is on sale for as long as the event itself is selling.
+    // Which is how every tier behaved before windows existed.
+    //
+    // This subsumes the older event-level `sales.presale*` block: an early
+    // tier is simply one whose window opens before the others. Existing
+    // events keep working because both fields default to null.
+    availableFrom: {
+      type: Date,
+      default: null,
+    },
+    availableUntil: {
+      type: Date,
+      default: null,
+    },
   },
   {
     _id: true,
@@ -230,7 +245,7 @@ const eventSchema = new Schema(
       default: null,
       index: true,
     },
-    // Discovery taxonomy (Music/Sports/Comedy/...) — unrelated to
+    // Discovery taxonomy (Music/Sports/Comedy/...). Unrelated to
     // ticketCategories below, which is a pricing-tier concept.
     categoryIds: {
       type: [Schema.Types.ObjectId],
@@ -408,7 +423,7 @@ const eventSchema = new Schema(
       default: "",
     },
     // Set by event-cancellation-refund-monitor.service.js once a cancelled
-    // event has zero remaining paid/used tickets — lets the monitor skip a
+    // event has zero remaining paid/used tickets. Lets the monitor skip a
     // fully-settled cancellation instead of rescanning it every tick.
     refundSweepCompletedAt: {
       type: Date,
@@ -442,7 +457,7 @@ eventSchema.index({ organizerUserId: 1, createdAt: -1 });
 eventSchema.index({ location: "2dsphere" });
 
 // Kept in sync with latitude/longitude so geo queries ($geoWithin) have a
-// GeoJSON field to run against — latitude/longitude stay the source of
+// GeoJSON field to run against. Latitude/longitude stay the source of
 // truth and are never removed, this is purely a derived mirror. `country`
 // is derived the same way, via a bounding-box lookup, so it never drifts
 // from the event's real coordinates and is never accepted as client input.

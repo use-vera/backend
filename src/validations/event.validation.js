@@ -117,13 +117,30 @@ const emergencyConfigSchema = z.object({
   sensitivity: z.coerce.number().min(0.5).max(2).optional().default(1),
 });
 
-const ticketCategorySchema = z.object({
-  categoryId: z.string().trim().min(1).max(60).optional(),
-  name: z.string().trim().min(1).max(60),
-  description: z.string().trim().max(180).optional(),
-  quantity: z.coerce.number().int().min(1).max(200000),
-  priceNaira: z.coerce.number().min(0).optional().default(0),
-});
+const ticketCategorySchema = z
+  .object({
+    categoryId: z.string().trim().min(1).max(60).optional(),
+    name: z.string().trim().min(1).max(60),
+    description: z.string().trim().max(180).optional(),
+    quantity: z.coerce.number().int().min(1).max(200000),
+    priceNaira: z.coerce.number().min(0).optional().default(0),
+    // Per-tier sale window; either side may be omitted for "no bound".
+    availableFrom: dateStringSchema.nullish(),
+    availableUntil: dateStringSchema.nullish(),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.availableFrom || !value.availableUntil) {
+      return;
+    }
+
+    if (new Date(value.availableUntil) <= new Date(value.availableFrom)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["availableUntil"],
+        message: "This tier must close after it opens",
+      });
+    }
+  });
 
 const createEventSchema = z
   .object({
@@ -264,11 +281,15 @@ const createEventSchema = z
       });
     }
 
+    // The event-level presale holds a single price and quantity, so it cannot
+    // describe a list of tiers. Tiers carry their own availableFrom /
+    // availableUntil instead, which expresses the same thing per tier.
     if (Array.isArray(value.ticketCategories) && value.ticketCategories.length > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["sales", "presaleEnabled"],
-        message: "Presale currently requires base pricing (no ticket categories)",
+        message:
+          "Give each ticket tier its own sale window instead of using the event-level presale",
       });
     }
 
@@ -372,7 +393,7 @@ const updateEventSchema = z
     resale: resalePolicySchema.optional(),
     sales: ticketSalesSchema.optional(),
     emergency: emergencyConfigSchema.optional(),
-    // "cancelled" is intentionally excluded — cancellation has real side
+    // "cancelled" is intentionally excluded. Cancellation has real side
     // effects (refunds, attendee/organizer notifications) and only goes
     // through the dedicated cancelEventSchema/PATCH .../cancel endpoint.
     status: z.enum(["draft", "published"]).optional(),
@@ -507,6 +528,33 @@ const verifyTicketPaymentSchema = z.object({
   reference: z.string().trim().min(6).max(180).optional(),
 });
 
+const registerCheckInDeviceSchema = z.object({
+  label: z.string().trim().min(1).max(60),
+});
+
+const checkInDeviceParamsSchema = z.object({
+  eventId: objectIdSchema,
+  deviceId: objectIdSchema,
+});
+
+const batchCheckInSchema = z.object({
+  deviceId: objectIdSchema.optional(),
+  entries: z
+    .array(
+      z.object({
+        // Client-assigned and unique per device; this is what makes a retried
+        // batch idempotent without the client tracking what already landed.
+        clientSeq: z.coerce.number().int().min(0).optional(),
+        code: z.string().trim().min(3).max(600),
+        // When the door decided, not when this request was sent.
+        scannedAt: dateStringSchema,
+        override: z.boolean().optional().default(false),
+      }),
+    )
+    .min(1)
+    .max(500),
+});
+
 const ticketCheckInSchema = z.object({
   code: z.string().trim().min(3).max(600),
   eventId: objectIdSchema.optional(),
@@ -527,7 +575,7 @@ const listMyTicketsQuerySchema = z.object({
     .optional()
     .default("all"),
   // When set, returns every ticket from one purchase (see
-  // paymentMetadata.purchaseBatchId) regardless of status — lets the
+  // paymentMetadata.purchaseBatchId) regardless of status. Lets the
   // post-checkout success screen show every code from a multi-quantity
   // purchase, not just the primary ticket the purchase/verify response
   // itself carries.
@@ -696,6 +744,9 @@ module.exports = {
   initializeResalePurchaseSchema,
   verifyTicketPaymentSchema,
   ticketCheckInSchema,
+  batchCheckInSchema,
+  registerCheckInDeviceSchema,
+  checkInDeviceParamsSchema,
   reportTicketLocationSchema,
   listMyTicketsQuerySchema,
   listOrganizerTicketSalesQuerySchema,

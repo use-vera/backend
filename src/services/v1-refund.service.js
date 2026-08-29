@@ -5,7 +5,7 @@ const { mapOrderTicket } = require("./v1-mappers");
 
 /**
  * refundTicket({ticketId, actorUserId, reason}) is used completely
- * unmodified — its actorUserId is used only for an isBuyer||isOrganizer
+ * unmodified. Its actorUserId is used only for an isBuyer||isOrganizer
  * check. Since workspace ownership is already established independently
  * here, we satisfy that check by passing the ticket's actual organizer
  * (not the workspace owner, which can diverge from it).

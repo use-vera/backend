@@ -9,7 +9,7 @@ const ALL_SCOPES = [
 
 // Publishable (pk_) keys are meant to be embeddable in client-side code, so
 // their effective scopes are hard-capped to read-only regardless of what's
-// stored on the ApiKey row — defense in depth against a leaked pk_ key ever
+// stored on the ApiKey row. Defense in depth against a leaked pk_ key ever
 // being able to move money or check in tickets.
 const PUBLISHABLE_ALLOWED_SCOPES = ["events:read"];
 

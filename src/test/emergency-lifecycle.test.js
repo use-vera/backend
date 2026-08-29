@@ -69,7 +69,7 @@ test("enough agreeing, clustered, unique reports drive the emergency from monito
   expect(lastEmergency.alertSentAt).toBeTruthy();
   expect(lastEmergency.notificationCount).toBe(1);
   // Recipients = every checked-in attendee (reporters so far + the 3
-  // bystanders) at the moment the threshold was crossed — the exact count
+  // bystanders) at the moment the threshold was crossed. The exact count
   // depends on how many reporters had submitted by then, so assert
   // self-consistency (one notification per counted recipient) and that
   // bystanders alone are always included, rather than a hardcoded total.

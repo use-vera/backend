@@ -1,4 +1,15 @@
 const express = require("express");
+const {
+  getEventPageController,
+  saveEventPageController,
+  setEventPageStatusController,
+  checkSlugController,
+} = require("../controllers/event-page.controller");
+const {
+  saveEventPageSchema,
+  setPageStatusSchema,
+  slugQuerySchema,
+} = require("../validations/event-page.validation");
 const authMiddleware = require("../middlewares/auth.middleware");
 const {
   validateBody,
@@ -26,6 +37,9 @@ const {
   initializeResalePurchaseSchema,
   verifyTicketPaymentSchema,
   ticketCheckInSchema,
+  batchCheckInSchema,
+  registerCheckInDeviceSchema,
+  checkInDeviceParamsSchema,
   reportTicketLocationSchema,
   listMyTicketsQuerySchema,
   listOrganizerTicketSalesQuerySchema,
@@ -77,6 +91,12 @@ const {
   cancelTicketPaymentController,
   refundTicketController,
   checkInTicketController,
+  batchCheckInController,
+  listCheckInConflictsController,
+  getCheckInRosterController,
+  registerCheckInDeviceController,
+  listCheckInDevicesController,
+  revokeCheckInDeviceController,
   listMyTicketsController,
   listOrganizerTicketSalesController,
   getTicketController,
@@ -300,6 +320,71 @@ router.post(
   validateBody(eventReminderSchema),
   updateEventReminderController,
 );
+router.get(
+  "/:eventId/page",
+  validateParams(eventIdParamsSchema),
+  getEventPageController,
+);
+
+router.put(
+  "/:eventId/page",
+  validateParams(eventIdParamsSchema),
+  validateBody(saveEventPageSchema),
+  saveEventPageController,
+);
+
+router.patch(
+  "/:eventId/page/status",
+  validateParams(eventIdParamsSchema),
+  validateBody(setPageStatusSchema),
+  setEventPageStatusController,
+);
+
+router.get(
+  "/:eventId/page/slug-check",
+  validateParams(eventIdParamsSchema),
+  validateQuery(slugQuerySchema),
+  checkSlugController,
+);
+
+router.get(
+  "/:eventId/checkin/roster",
+  validateParams(eventIdParamsSchema),
+  getCheckInRosterController,
+);
+
+router.post(
+  "/:eventId/checkin/batch",
+  validateParams(eventIdParamsSchema),
+  validateBody(batchCheckInSchema),
+  batchCheckInController,
+);
+
+router.post(
+  "/:eventId/checkin/devices",
+  validateParams(eventIdParamsSchema),
+  validateBody(registerCheckInDeviceSchema),
+  registerCheckInDeviceController,
+);
+
+router.get(
+  "/:eventId/checkin/devices",
+  validateParams(eventIdParamsSchema),
+  listCheckInDevicesController,
+);
+
+router.delete(
+  "/:eventId/checkin/devices/:deviceId",
+  validateParams(checkInDeviceParamsSchema),
+  revokeCheckInDeviceController,
+);
+
+router.get(
+  "/:eventId/checkin/conflicts",
+  validateParams(eventIdParamsSchema),
+  listCheckInConflictsController,
+);
+
 router.get(
   "/:eventId/exports",
   validateParams(eventIdParamsSchema),

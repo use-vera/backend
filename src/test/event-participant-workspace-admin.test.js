@@ -4,7 +4,7 @@ const { createUser, createEvent, createWorkspace } = require("./fixtures");
 
 // Regression test for a real bug: the mobile client shows the
 // reminders/chat UI to any workspace admin (permissions.canManageOrg),
-// not just the event's literal organizer or a ticket holder — but the
+// not just the event's literal organizer or a ticket holder, but the
 // backend's ensureEventParticipant only recognized the literal organizer
 // or a ticket holder, so a workspace admin viewing a teammate's event hit
 // "Only attendees or organizers can access this action" the moment they

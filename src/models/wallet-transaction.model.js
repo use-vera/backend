@@ -6,7 +6,7 @@ const { Schema, model } = require("mongoose");
  * atomically in wallet-settlement.service.js) and never deleted.
  *
  * idempotencyKey is the real double-write guard (unique index), not just an
- * application-level check-before-insert — see wallet.service.js and
+ * application-level check-before-insert. See wallet.service.js and
  * wallet-settlement.service.js for how it's derived per transaction type.
  */
 const walletTransactionSchema = new Schema(

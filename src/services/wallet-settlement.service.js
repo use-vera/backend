@@ -8,7 +8,7 @@ const DEFAULT_BATCH_SIZE = 200;
 /**
  * Settles one candidate transaction. The atomic claim (pending_settlement ->
  * settled) happens INSIDE the same transaction as the wallet balance move
- * and the settlement-record insert — not as a separate step before it — so
+ * and the settlement-record insert. Not as a separate step before it, so
  * a mid-way failure rolls the claim back too. Two overlapping tick runs
  * racing on the same transaction resolve via Mongo's write-conflict
  * detection: the loser's claim re-read (on retry) sees status is already
@@ -42,7 +42,7 @@ const settleOneTransaction = async (transactionId) =>
     // above already guarantees a given source transaction can be claimed
     // exactly once, ever, so this insert's idempotencyKey can never
     // legitimately collide. If it somehow did, letting it throw (aborting
-    // and retrying via withMongoTransaction) is correct — a caught-and-
+    // and retrying via withMongoTransaction) is correct. A caught-and-
     // swallowed error here would NOT save the transaction anyway, since
     // MongoDB poisons a transaction for commit the moment any operation
     // inside it fails, regardless of whether the app catches that error.

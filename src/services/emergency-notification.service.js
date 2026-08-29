@@ -25,7 +25,7 @@ const getCheckedInAttendeeUserIds = async (eventId) => {
 };
 
 /**
- * The Notification Service's mass-fanout path — deliberately distinct from
+ * The Notification Service's mass-fanout path. Deliberately distinct from
  * notification.service.js's single-user `createNotification`, which would
  * be a real perf problem at "notify every checked-in attendee" scale (N
  * individual Expo requests + N individual notification writes). Instead:

@@ -40,9 +40,8 @@ const toList = (value, fallback) => {
     .filter(Boolean);
 };
 
-const defaultMongoUri = "mongodb://127.0.0.1:27017/vera_backend";
 const nodeEnv = process.env.NODE_ENV || "development";
-const configuredMongoUri = process.env.MONGO_URI || defaultMongoUri;
+const configuredMongoUri = process.env.MONGO_URI;
 
 const env = {
   nodeEnv,
@@ -50,7 +49,10 @@ const env = {
   port: toNumber(process.env.PORT, 5050),
   mongoUri: configuredMongoUri,
   mongoUriFallback: process.env.MONGO_URI_FALLBACK || "",
-  mongoAutoIndex: toBoolean(process.env.MONGO_AUTO_INDEX, nodeEnv !== "production"),
+  mongoAutoIndex: toBoolean(
+    process.env.MONGO_AUTO_INDEX,
+    nodeEnv !== "production",
+  ),
   mongoForceIpv4: toBoolean(process.env.MONGO_FORCE_IPV4, false),
   mongoServerSelectionTimeoutMs: toNumber(
     process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS,
@@ -73,8 +75,14 @@ const env = {
     process.env.PRESENCE_MONITOR_TICK_MS,
     60 * 1000,
   ),
-  emergencyMonitorEnabled: toBoolean(process.env.EMERGENCY_MONITOR_ENABLED, true),
-  emergencyMonitorTickMs: toNumber(process.env.EMERGENCY_MONITOR_TICK_MS, 15 * 1000),
+  emergencyMonitorEnabled: toBoolean(
+    process.env.EMERGENCY_MONITOR_ENABLED,
+    true,
+  ),
+  emergencyMonitorTickMs: toNumber(
+    process.env.EMERGENCY_MONITOR_TICK_MS,
+    15 * 1000,
+  ),
   eventCancellationRefundMonitorEnabled: toBoolean(
     process.env.EVENT_CANCELLATION_REFUND_MONITOR_ENABLED,
     true,
@@ -118,8 +126,7 @@ const env = {
     14,
   ),
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || "",
-  paystackBaseUrl:
-    process.env.PAYSTACK_BASE_URL || "https://api.paystack.co",
+  paystackBaseUrl: process.env.PAYSTACK_BASE_URL || "https://api.paystack.co",
   paystackCallbackUrl: process.env.PAYSTACK_CALLBACK_URL || "",
   paystackDevBypass: toBoolean(
     process.env.PAYSTACK_DEV_BYPASS,

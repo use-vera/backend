@@ -22,7 +22,7 @@ test("cancelling an event sets status/cancelledAt/cancellationReason and returns
   expect(result.totalRefundNaira).toBeGreaterThan(0);
 });
 
-test("cancelling does not refund inline — ticket status is unchanged immediately after", async () => {
+test("cancelling does not refund inline, ticket status is unchanged immediately after", async () => {
   const organizer = await createUser();
   const buyer = await createUser();
   const event = await createEvent({ organizerUserId: organizer._id });
@@ -60,7 +60,7 @@ test("cancelling notifies the organizer and every distinct paid/used ticket hold
     userId: organizer._id,
   });
   expect(organizerNotifications).toHaveLength(1);
-  // 3 tickets total (2 for buyerOne, 1 for buyerTwo) — the organizer's
+  // 3 tickets total (2 for buyerOne, 1 for buyerTwo). The organizer's
   // count reflects tickets being refunded, not unique buyers.
   expect(organizerNotifications[0].message).toContain("3 attendee(s)");
 });

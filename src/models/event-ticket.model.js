@@ -145,8 +145,21 @@ const eventTicketSchema = new Schema(
       ref: "User",
       default: null,
     },
+    // Which door performed the admission, and whether it decided locally.
+    // Offline scans are admitted at the door and only reach the server on
+    // sync, so "when" and "where" cannot be inferred from the request.
+    usedByDeviceId: {
+      type: Schema.Types.ObjectId,
+      ref: "CheckInDevice",
+      default: null,
+    },
+    usedVia: {
+      type: String,
+      enum: ["online", "offline"],
+      default: "online",
+    },
     // Self-reported by the ticket holder's own device (e.g. when they open
-    // their ticket pass) — used by check-in geofencing instead of the
+    // their ticket pass). Used by check-in geofencing instead of the
     // scanning staff member's location. Never accepted from anyone but the
     // ticket's buyerUserId.
     holderLastLatitude: {
@@ -166,8 +179,8 @@ const eventTicketSchema = new Schema(
       default: null,
     },
     // Snapshot of whichever holder location (if any) was used for the
-    // geofence decision at the moment this ticket was actually checked in —
-    // kept permanently for the Footprints check-in detail map, independent
+    // geofence decision at the moment this ticket was actually checked in.
+    // Kept permanently for the Footprints check-in detail map, independent
     // of holderLast* which keeps changing as the holder's location updates.
     checkInLatitude: {
       type: Number,

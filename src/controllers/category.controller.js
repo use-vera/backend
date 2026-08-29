@@ -17,7 +17,7 @@ const listCategoriesController = asyncHandler(async (req, res) => {
   });
 });
 
-// Public counterpart — deliberately ignores any query params so a caller
+// Public counterpart. Deliberately ignores any query params so a caller
 // can never pass includeInactive=true to see deactivated categories.
 const listPublicCategoriesController = asyncHandler(async (_req, res) => {
   const categories = await listCategories({ includeInactive: false });

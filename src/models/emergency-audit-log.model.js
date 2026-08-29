@@ -3,7 +3,7 @@ const { Schema, model } = require("mongoose");
 /**
  * Audit trail for every emergency-related action (report submitted,
  * lifecycle transitions, manual broadcasts, resolutions). Unlike
- * GeofenceOverrideLog this has no TTL — safety-incident records are kept
+ * GeofenceOverrideLog this has no TTL. Safety-incident records are kept
  * indefinitely, matching the "never delete reports" rule for the reports
  * themselves.
  */

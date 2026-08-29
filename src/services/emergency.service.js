@@ -42,13 +42,13 @@ const CATEGORY_ACTION_REQUIRED = {
   other: "Please remain calm and follow venue staff instructions.",
 };
 
-// The "detected" state fires at a lower bar than the full alert threshold —
-// it's a visible early-warning signal on the organizer dashboard before
+// The "detected" state fires at a lower bar than the full alert threshold.
+// It's a visible early-warning signal on the organizer dashboard before
 // Vera actually notifies the crowd.
 const DETECTION_THRESHOLD_RATIO = 0.5;
 
 // How long a resolved emergency stays around before the monitor tick
-// auto-archives it — "Archived" is a housekeeping state, not a manual one.
+// auto-archives it. "Archived" is a housekeeping state, not a manual one.
 const ARCHIVE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 const resolveEmergencyRadius = (event) =>
@@ -101,7 +101,7 @@ const findOrCreateActiveEmergency = async ({ eventId, category }) => {
     });
   } catch (error) {
     // Race: two reports arrived concurrently and both tried to create the
-    // active emergency — the partial unique index rejects the loser, who
+    // active emergency. The partial unique index rejects the loser, who
     // simply re-reads the winner's doc instead of failing the request.
     if (error?.code === 11000) {
       const winner = await EventEmergency.findOne({ eventId, isActive: true });

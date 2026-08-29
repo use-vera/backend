@@ -82,8 +82,8 @@ const eventEmergencySchema = new Schema(
       type: Number,
       default: 0,
     },
-    // Bumped on the initial auto-alert and on every manual broadcast —
-    // never on a plain incoming report — this is what makes "update the
+    // Bumped on the initial auto-alert and on every manual broadcast.
+    // Never on a plain incoming report. This is what makes "update the
     // numbers, don't resend the alert" observable from the outside.
     notificationCount: {
       type: Number,

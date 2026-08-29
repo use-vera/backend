@@ -23,7 +23,7 @@ const router = express.Router();
 
 router.use(authMiddleware);
 
-// Defense-in-depth behind the report cooldown itself — guards a scripted
+// Defense-in-depth behind the report cooldown itself. Guards a scripted
 // client hammering the endpoint faster than the cooldown check runs.
 const reportRateLimit = rateLimit({
   windowMs: 60 * 1000,

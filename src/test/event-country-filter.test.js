@@ -4,7 +4,7 @@ const { createUser, createEvent } = require("./fixtures");
 
 // createEvent's fixture defaults to an already-ended event; these tests
 // care about country matching, not date filtering, so give every event a
-// genuinely future window — otherwise the "hide ended events" behavior
+// genuinely future window. Otherwise the "hide ended events" behavior
 // (confirmed via event-visibility.test.js) would exclude them regardless
 // of country.
 const upcoming = () => ({
@@ -12,11 +12,11 @@ const upcoming = () => ({
   endsAt: new Date(Date.now() + 27 * 60 * 60 * 1000),
 });
 
-// Lekki Phase 1, Lagos — reused from event-near-me.test.js's location pool.
+// Lekki Phase 1, Lagos. Reused from event-near-me.test.js's location pool.
 const LAGOS = { latitude: 6.4474, longitude: 3.4687 };
 // Central London.
 const LONDON = { latitude: 51.5072, longitude: -0.1276 };
-// Middle of the Pacific ocean — outside every bounding box.
+// Middle of the Pacific ocean. Outside every bounding box.
 const OCEAN = { latitude: 0, longitude: -160 };
 
 test("resolveCountryFromCoordinates resolves known coordinates and falls back to Other", () => {

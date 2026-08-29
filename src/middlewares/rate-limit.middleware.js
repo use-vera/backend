@@ -1,7 +1,7 @@
 const ApiError = require("../utils/api-error");
 
 /**
- * Minimal in-memory sliding-window rate limiter — no new dependency, no
+ * Minimal in-memory sliding-window rate limiter. No new dependency, no
  * shared store. Single-process only by design: this codebase has no
  * shared-store infra (Redis or otherwise), so a multi-instance deployment
  * would need a different backing store. Intended as defense-in-depth
@@ -23,7 +23,7 @@ const rateLimit = ({ windowMs, max, keyFn }) => {
     const timestamps = (hits.get(key) || []).filter((ts) => now - ts < windowMs);
 
     if (timestamps.length >= max) {
-      next(new ApiError(429, "Too many requests — please slow down", null, "RATE_LIMITED"));
+      next(new ApiError(429, "Too many requests, please slow down", null, "RATE_LIMITED"));
       return;
     }
 

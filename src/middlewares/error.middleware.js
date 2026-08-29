@@ -4,14 +4,14 @@ const notFoundMiddleware = (_req, _res, next) => {
   next(new ApiError(404, "Route not found"));
 };
 
-// Morgan only ever prints "METHOD path STATUS duration - length" — the
+// Morgan only ever prints "METHOD path STATUS duration - length". The
 // actual reason a request failed (message/code/details, or a stack trace
 // for a genuine bug) was previously only ever sent in the HTTP response
 // body, never written to stdout/stderr, so it never showed up in Render's
 // (or any other host's) log stream. Every branch below now logs enough to
 // diagnose the failure from logs alone.
 const logError = ({ req, statusCode, message, code, details, stack }) => {
-  const summary = `[${statusCode}] ${req.method} ${req.originalUrl} — ${message}${code ? ` (${code})` : ""}`;
+  const summary = `[${statusCode}] ${req.method} ${req.originalUrl} ${message}${code ? ` (${code})` : ""}`;
 
   if (statusCode >= 500) {
     // eslint-disable-next-line no-console

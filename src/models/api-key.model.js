@@ -3,7 +3,7 @@ const { ALL_SCOPES } = require("../config/api-scopes");
 
 /**
  * Workspace-scoped Developer Platform credentials. secretKeyHash is the only
- * persisted form of the secret key — select:false so it's never loaded by
+ * persisted form of the secret key. Select:false so it's never loaded by
  * default, mirroring User.passwordHash. The raw secret is shown to the
  * caller exactly once, at creation time, and never again.
  */

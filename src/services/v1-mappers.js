@@ -1,4 +1,4 @@
-// Shared curated DTOs for the /v1 Developer Platform API — kept separate
+// Shared curated DTOs for the /v1 Developer Platform API. Kept separate
 // from the internal API's response shapes (mapEventForResponse etc.) so the
 // public API surface never leaks internal fields and can evolve
 // independently.

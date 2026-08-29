@@ -4,7 +4,7 @@ const { Schema, model } = require("mongoose");
  * A Developer Platform-facing wrapper around the existing ticket purchase
  * pipeline: one CheckoutSession maps to one initializeTicketPurchase batch
  * (the ticketIds it issued). No parallel inventory/payment logic lives here
- * — it just tracks the batch's lifecycle for API consumers polling/listing.
+ *. It just tracks the batch's lifecycle for API consumers polling/listing.
  */
 const checkoutSessionSchema = new Schema(
   {
@@ -64,7 +64,7 @@ const checkoutSessionSchema = new Schema(
       type: Boolean,
       default: true,
     },
-    // Raw Paystack authorizationUrl for this phase — there is no
+    // Raw Paystack authorizationUrl for this phase. There is no
     // Vera-hosted checkout page yet. Treat as an opaque redirect URL; a
     // future Developer Portal phase would point this at a real hosted
     // page instead without changing its meaning to integrators.
@@ -93,7 +93,7 @@ const checkoutSessionSchema = new Schema(
       type: Schema.Types.Mixed,
       default: {},
     },
-    // No default — must stay genuinely absent (not null) when unset, so the
+    // No default. Must stay genuinely absent (not null) when unset, so the
     // sparse unique index below only enforces uniqueness among sessions
     // that actually supplied an Idempotency-Key. Mongo's sparse indexes
     // skip fields that are absent from the document, not fields present
@@ -130,7 +130,7 @@ checkoutSessionSchema.index({ status: 1, expiresAt: 1 });
 checkoutSessionSchema.index({ workspaceId: 1, createdAt: -1 });
 // A plain `sparse: true` doesn't work here: for a COMPOUND index, Mongo's
 // sparse option only skips a document when ALL indexed fields are missing
-// — since apiKeyId is always present, it would never actually skip
+//. Since apiKeyId is always present, it would never actually skip
 // anything. partialFilterExpression is the correct way to express
 // "unique only among documents that supplied an Idempotency-Key".
 checkoutSessionSchema.index(

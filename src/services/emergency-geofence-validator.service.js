@@ -1,13 +1,13 @@
 const ApiError = require("../utils/api-error");
 const { haversineDistanceMeters, toCheckInWindow, resolveOccurrenceWindow } = require("./event.service");
 
-// GPS fixes worse than this are treated as "no meaningful location" —
-// the practical spoofing/garbage-data guard available without device
+// GPS fixes worse than this are treated as "no meaningful location".
+// The practical spoofing/garbage-data guard available without device
 // attestation. Documented judgment call, not derived from a spec value.
 const MAX_ACCEPTABLE_ACCURACY_METERS = 100;
 
 /**
- * The Geofence Validator — a separate, focused module so eligibility rules
+ * The Geofence Validator. A separate, focused module so eligibility rules
  * (checked-in, inside geofence, event active, GPS sanity) can be reasoned
  * about and tested independently of report persistence or scoring.
  */
@@ -61,7 +61,7 @@ const ensureAttendeeEligibleToReport = ({
   ) {
     throw new ApiError(
       400,
-      "Your location signal is too weak to verify — move to an open area and try again",
+      "Your location signal is too weak to verify. Move to an open area and try again",
       { maxAcceptableAccuracyMeters: MAX_ACCEPTABLE_ACCURACY_METERS },
       "LOCATION_ACCURACY_TOO_LOW",
     );

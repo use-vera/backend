@@ -18,6 +18,12 @@ const {
   verifyTicketPayment,
   cancelTicketPayment,
   checkInTicket,
+  batchCheckInTickets,
+  listCheckInConflicts,
+  getCheckInRoster,
+  registerCheckInDevice,
+  listCheckInDevices,
+  revokeCheckInDevice,
   listMyTickets,
   listOrganizerTicketSales,
   getTicketById,
@@ -580,6 +586,68 @@ const checkInTicketController = asyncHandler(async (req, res) => {
   });
 });
 
+const getCheckInRosterController = asyncHandler(async (req, res) => {
+  const result = await getCheckInRoster({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+    since: req.query.since || null,
+  });
+
+  res.json({ success: true, message: "Check-in roster", data: result });
+});
+
+const batchCheckInController = asyncHandler(async (req, res) => {
+  const result = await batchCheckInTickets({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+    payload: req.body,
+  });
+
+  res.json({ success: true, message: "Check-ins synced", data: result });
+});
+
+const registerCheckInDeviceController = asyncHandler(async (req, res) => {
+  const result = await registerCheckInDevice({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+    payload: req.body,
+  });
+
+  res.status(result.reused ? 200 : 201).json({
+    success: true,
+    message: "Door registered",
+    data: result.device,
+  });
+});
+
+const listCheckInDevicesController = asyncHandler(async (req, res) => {
+  const result = await listCheckInDevices({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.json({ success: true, message: "Doors", data: result });
+});
+
+const revokeCheckInDeviceController = asyncHandler(async (req, res) => {
+  const result = await revokeCheckInDevice({
+    eventId: req.params.eventId,
+    deviceId: req.params.deviceId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.json({ success: true, message: "Door revoked", data: result });
+});
+
+const listCheckInConflictsController = asyncHandler(async (req, res) => {
+  const result = await listCheckInConflicts({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.json({ success: true, message: "Check-in conflicts", data: result });
+});
+
 const listMyTicketsController = asyncHandler(async (req, res) => {
   const result = await listMyTickets({
     actorUserId: req.auth.userId,
@@ -892,6 +960,12 @@ module.exports = {
   cancelTicketPaymentController,
   refundTicketController,
   checkInTicketController,
+  batchCheckInController,
+  listCheckInConflictsController,
+  getCheckInRosterController,
+  registerCheckInDeviceController,
+  listCheckInDevicesController,
+  revokeCheckInDeviceController,
   listMyTicketsController,
   listOrganizerTicketSalesController,
   getTicketController,

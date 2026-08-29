@@ -109,7 +109,7 @@ router.use((_req, _res, next) => {
   next(new ApiError(404, "Route not found", null, "NOT_FOUND"));
 });
 
-// Scoped to this sub-router only — never touches the internal API's
+// Scoped to this sub-router only. Never touches the internal API's
 // error.middleware.js.
 router.use(v1ErrorMiddleware);
 

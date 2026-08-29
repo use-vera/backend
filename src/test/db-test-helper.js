@@ -4,8 +4,8 @@ const { MongoMemoryReplSet } = require("mongodb-memory-server");
 let replSet = null;
 
 /**
- * A single-node replica set (not a standalone server) is required here —
- * mongoose.startSession()+withTransaction() throws against a standalone
+ * A single-node replica set (not a standalone server) is required here.
+ * Mongoose.startSession()+withTransaction() throws against a standalone
  * mongod, and the wallet ledger relies on transactions for correctness.
  */
 const startTestDb = async () => {

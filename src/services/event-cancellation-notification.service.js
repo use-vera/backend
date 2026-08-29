@@ -16,7 +16,7 @@ const chunk = (items, size) => {
 
 /**
  * Generic bulk fanout for "notify every affected attendee of this event
- * about something" — same mechanics as emergency-notification.service.js's
+ * about something". Same mechanics as emergency-notification.service.js's
  * broadcastEmergencyAlert (bulk AppNotification insert + chunked Expo push),
  * kept separate from that function since it's emergency-shaped (hardcoded
  * type/data/realtime event) and this one is generic.

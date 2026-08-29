@@ -79,14 +79,14 @@ const createCheckoutSession = async ({ apiKeyId, workspaceId, payload, idempoten
     paymentAttemptId: result.paymentAttemptId || null,
     status,
     requiresPayment: result.requiresPayment,
-    // Raw Paystack authorizationUrl — there is no Vera-hosted checkout page
+    // Raw Paystack authorizationUrl. There is no Vera-hosted checkout page
     // yet in this phase. See the model comment for the planned follow-up.
     checkoutUrl: result.payment?.authorizationUrl || "",
     successUrl: payload.successUrl || "",
     cancelUrl: payload.cancelUrl || "",
     customerEmail: payload.customerEmail,
     metadata: payload.metadata || {},
-    // undefined (not null) when absent — see the model field comment: the
+    // undefined (not null) when absent. See the model field comment: the
     // sparse unique index only works if the field is truly missing.
     clientIdempotencyKey: idempotencyKey || undefined,
     expiresAt: result.requiresPayment
@@ -117,7 +117,7 @@ const getCheckoutSession = async ({ workspaceId, sessionId }) => {
       session.purchasedAt = new Date();
       await session.save();
     } catch (error) {
-      // 402 "Payment has not been completed" just means still pending — not
+      // 402 "Payment has not been completed" just means still pending. Not
       // an error from the session's point of view. Anything else (e.g. a
       // genuine provider/config failure) propagates.
       if (!(error instanceof ApiError) || error.statusCode !== 402) {
@@ -127,7 +127,7 @@ const getCheckoutSession = async ({ workspaceId, sessionId }) => {
   }
 
   if (session.status === "reserved" && session.expiresAt <= new Date()) {
-    // Defensive read-time fallback — the checkout-session monitor should
+    // Defensive read-time fallback. The checkout-session monitor should
     // normally have already flipped this, but a GET immediately after
     // expiry shouldn't show a stale "reserved" status.
     session.status = "expired";

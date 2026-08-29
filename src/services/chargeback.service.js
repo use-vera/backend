@@ -7,7 +7,7 @@ const { getOrCreateWallet } = require("./wallet.service");
 
 /**
  * Admin-only wallet-side reaction to a chargeback/dispute. No Paystack call
- * here — real Paystack dispute webhooks (charge.dispute.*) are a separate,
+ * here. Real Paystack dispute webhooks (charge.dispute.*) are a separate,
  * later follow-up; this is the debit logic they'll eventually call into.
  * Same "debit available, spill into owingBalanceKobo if insufficient"
  * mechanics as a post-settlement refund.

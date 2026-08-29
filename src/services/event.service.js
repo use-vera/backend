@@ -1,8 +1,11 @@
+const crypto = require("crypto");
 const ApiError = require("../utils/api-error");
 const mongoose = require("mongoose");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
 const GeofenceOverrideLog = require("../models/geofence-override-log.model");
+const CheckInAttempt = require("../models/check-in-attempt.model");
+const CheckInDevice = require("../models/check-in-device.model");
 const EventRating = require("../models/event-rating.model");
 const EventCenter = require("../models/event-center.model");
 const EventChatMessage = require("../models/event-chat-message.model");
@@ -18,7 +21,7 @@ const Workspace = require("../models/workspace.model");
 const User = require("../models/user.model");
 const Follow = require("../models/follow.model");
 // Not referenced directly below, but event.service.js populates
-// Event.categoryIds — Mongoose only registers a model's schema once its
+// Event.categoryIds. Mongoose only registers a model's schema once its
 // defining file is require()'d somewhere in the process, so this import is
 // required for that populate() to work in any entry point that doesn't
 // otherwise happen to load category.model.js first (e.g. scripts, tests).
@@ -342,7 +345,7 @@ const getTicketCategoryTotals = (categories) => {
 const getNextRecurringOccurrenceStart = (event, referenceAt) => {
   const startsAt = new Date(event.startsAt);
   const endsAt = new Date(event.endsAt);
-  // How long each occurrence lasts — an occurrence is only skipped once it
+  // How long each occurrence lasts. An occurrence is only skipped once it
   // has fully ENDED, not as soon as its start time passes. Without this, a
   // recurring event that's currently live (started today, not yet over)
   // gets treated as ineligible the moment its start time ticks by, and the
@@ -352,6 +355,14 @@ const getNextRecurringOccurrenceStart = (event, referenceAt) => {
   const recurrence = normalizeRecurrence(event.recurrence, startsAt);
   const reference = new Date(referenceAt);
   const until = recurrence.endsOn ? endOfDay(recurrence.endsOn) : null;
+  // Where the forward scan begins. It has to sit one occurrence-length behind
+  // the reference, not on it: an occurrence that started at 23:00 and runs to
+  // 04:00 is still live at 01:00, but a scan that begins at "today" never
+  // generates yesterday's date and the event drops out of every listing while
+  // it is happening. Every branch below still rejects occurrences that have
+  // genuinely ended via `candidateEnd < reference`, so looking back cannot
+  // resurrect a finished one.
+  const scanFrom = new Date(reference.getTime() - duration);
 
   if (until && reference > until) {
     return null;
@@ -366,7 +377,7 @@ const getNextRecurringOccurrenceStart = (event, referenceAt) => {
     const days = recurrence.daysOfWeek.length
       ? recurrence.daysOfWeek
       : [startsAt.getDay()];
-    const dayReference = startOfDay(reference > startsAt ? reference : startsAt);
+    const dayReference = startOfDay(scanFrom > startsAt ? scanFrom : startsAt);
 
     for (let offset = 0; offset < 370; offset += 1) {
       const day = addDays(dayReference, offset);
@@ -404,7 +415,7 @@ const getNextRecurringOccurrenceStart = (event, referenceAt) => {
   if (recurrence.type === "monthly-day") {
     const interval = Math.max(1, recurrence.interval);
     const dayOfMonth = recurrence.dayOfMonth || startsAt.getDate();
-    const monthReference = reference > startsAt ? reference : startsAt;
+    const monthReference = scanFrom > startsAt ? scanFrom : startsAt;
     const baseMonthIndex = toMonthIndex(startsAt);
 
     for (let offset = 0; offset < 120; offset += 1) {
@@ -451,7 +462,7 @@ const getNextRecurringOccurrenceStart = (event, referenceAt) => {
         ? recurrence.weekOfMonth
         : Math.min(4, Math.ceil(startsAt.getDate() / 7));
 
-    const monthReference = reference > startsAt ? reference : startsAt;
+    const monthReference = scanFrom > startsAt ? scanFrom : startsAt;
     const baseMonthIndex = toMonthIndex(startsAt);
 
     for (let offset = 0; offset < 120; offset += 1) {
@@ -546,7 +557,7 @@ const applyEventFilters = ({
 
   // A past event only ever surfaces in buyer-facing listings when the
   // caller explicitly asked for a date range (e.g. searching a specific
-  // past day) — the "this-week"/"this-month" quick-filters and "all" are
+  // past day). The "this-week"/"this-month" quick-filters and "all" are
   // not explicit date queries in that sense, so they hide ended events too,
   // same as "upcoming" already did. Without this, "All" showed every event
   // ever, past or future.
@@ -607,7 +618,7 @@ const applyEventFilters = ({
   return filtered;
 };
 
-// Powers the country filter's picker UI on both clients — only countries
+// Powers the country filter's picker UI on both clients, only countries
 // with actual upcoming events show up, with counts, rather than a static
 // full-world list. Reuses applyEventFilters (not a raw $group) so the
 // counts respect the same "hide ended events, expand recurring occurrences"
@@ -993,8 +1004,21 @@ const mapEventForResponse = ({
     now,
   });
 
+  const eventJson = event.toJSON();
+
   return {
-    ...event.toJSON(),
+    ...eventJson,
+    // Each tier carries its own live state so clients can grey out or label a
+    // tier without re-deriving the window rules themselves.
+    ticketCategories: (eventJson.ticketCategories || []).map((category) => {
+      const availability = resolveTicketCategoryAvailability(category, now);
+
+      return {
+        ...category,
+        onSale: availability.onSale,
+        availabilityState: availability.state,
+      };
+    }),
     eventCenter: mapEventCenterForResponse(event),
     nextOccurrenceAt: occurrence.startsAt.toISOString(),
     nextOccurrenceEndsAt: occurrence.endsAt.toISOString(),
@@ -1619,8 +1643,8 @@ const ensureEventParticipant = async ({ event, actorUserId }) => {
     return;
   }
 
-  // Workspace admins/owners manage events they didn't personally create —
-  // the client already treats them as community participants (canManageOrg
+  // Workspace admins/owners manage events they didn't personally create.
+  // The client already treats them as community participants (canManageOrg
   // gates the same UI), so the backend must agree or they hit this error
   // the moment they try to use reminders/chat/posts on a teammate's event.
   if (await canUserManageEvent(event, actorUserId)) {
@@ -1721,7 +1745,7 @@ const normalizeEventSalesPolicy = ({
   if (hasTicketCategories) {
     throw new ApiError(
       400,
-      "Presale currently requires base pricing (ticket categories unsupported)",
+      "Give each ticket tier its own sale window instead of using the event-level presale",
     );
   }
 
@@ -1752,28 +1776,11 @@ const normalizeEventSalesPolicy = ({
     throw new ApiError(400, "Presale quantity cannot exceed expected tickets");
   }
 
-  const basePrice = Math.max(1, Math.round(Number(baseTicketPriceNaira || 0)));
-  const maxAllowedPresalePrice = Math.max(
-    basePrice + 1,
-    Math.round(basePrice * 2),
-  );
-
+  // Whether buying early costs less or more is the organizer's call. An
+  // early-bird discount and paid early access are both legitimate, and the
+  // platform has no business preferring one.
   if (presalePriceNaira <= 0) {
     throw new ApiError(400, "Presale price must be greater than 0");
-  }
-
-  if (presalePriceNaira <= basePrice) {
-    throw new ApiError(
-      400,
-      "Presale price must be higher than the main ticket price",
-    );
-  }
-
-  if (presalePriceNaira > maxAllowedPresalePrice) {
-    throw new ApiError(
-      400,
-      `Presale price cannot exceed ₦${maxAllowedPresalePrice.toLocaleString()} (2x base price)`,
-    );
   }
 
   return {
@@ -1784,6 +1791,39 @@ const normalizeEventSalesPolicy = ({
     presaleQuantity,
     presalePriceNaira,
   };
+};
+
+/**
+ * Whether one tier is on sale right now. A tier with no window behaves exactly
+ * as tiers did before windows existed: available whenever the event is selling.
+ */
+const resolveTicketCategoryAvailability = (category, now = new Date()) => {
+  const from = category?.availableFrom ? new Date(category.availableFrom) : null;
+  const until = category?.availableUntil
+    ? new Date(category.availableUntil)
+    : null;
+
+  if (from && now < from) {
+    return {
+      onSale: false,
+      state: "upcoming",
+      opensAt: from,
+      closesAt: until,
+      reason: `"${category.name}" goes on sale on ${from.toDateString()}`,
+    };
+  }
+
+  if (until && now >= until) {
+    return {
+      onSale: false,
+      state: "closed",
+      opensAt: from,
+      closesAt: until,
+      reason: `"${category.name}" is no longer on sale`,
+    };
+  }
+
+  return { onSale: true, state: "open", opensAt: from, closesAt: until, reason: "" };
 };
 
 const resolveEventSalePhase = (event, now = new Date()) => {
@@ -1818,6 +1858,29 @@ const resolveEventSalePhase = (event, now = new Date()) => {
 
   if (salesStartsAt && now < salesStartsAt) {
     return "upcoming";
+  }
+
+  // Tier windows express the same idea per tier. An event counts as being in
+  // presale when part of its line-up is buyable and part has not opened yet.
+  // Which is exactly what an early-access window looks like from outside.
+  const categories = Array.isArray(event?.ticketCategories)
+    ? event.ticketCategories
+    : [];
+
+  if (categories.length > 0) {
+    const windows = categories.map((category) =>
+      resolveTicketCategoryAvailability(category, now),
+    );
+    const openNow = windows.filter((window) => window.onSale);
+    const opensLater = windows.filter((window) => window.state === "upcoming");
+
+    if (openNow.length === 0 && opensLater.length > 0) {
+      return "upcoming";
+    }
+
+    if (openNow.length > 0 && opensLater.length > 0) {
+      return "presale";
+    }
   }
 
   return "main";
@@ -2669,7 +2732,7 @@ const listFeaturedEvents = async ({
 };
 
 // Real "Featured events" section: only events an organizer paid to feature
-// for today show up here. No trending fallback — if nobody paid, this is
+// for today show up here. No trending fallback. If nobody paid, this is
 // empty (the algorithmic `listFeaturedEvents` above stays in use elsewhere,
 // e.g. the "related events" carousel on an event's detail page).
 const listActiveFeaturedEventsForToday = async ({ actorUserId, limit = 8 }) => {
@@ -2745,7 +2808,7 @@ const listActiveFeaturedEventsForToday = async ({ actorUserId, limit = 8 }) => {
   return mapped.slice(0, safeLimit);
 };
 
-// Public counterpart of listActiveFeaturedEventsForToday — same
+// Public counterpart of listActiveFeaturedEventsForToday. Same
 // FeaturedEventSlot lookup and event-filtering pipeline, but composed
 // without any actor-scoped maps (no myTicket, no followingInterestCount),
 // matching listPublicEvents' no-actor-data guarantee for this router.
@@ -2985,7 +3048,7 @@ const getEventById = async ({ eventId, actorUserId }) => {
   if (actorUserId) {
     // Fire-and-forget: records only "has viewed", not a timestamped trail,
     // and only feeds the following-interest signal for people who follow
-    // this viewer — never exposed as a per-view log to anyone.
+    // this viewer. Never exposed as a per-view log to anyone.
     void EventView.findOneAndUpdate(
       { userId: actorUserId, eventId: event._id },
       { $set: { viewedAt: new Date() } },
@@ -3503,11 +3566,11 @@ const deleteEvent = async ({ eventId, actorUserId }) => {
 };
 
 /**
- * Cancels an event and immediately notifies everyone affected — organizer
+ * Cancels an event and immediately notifies everyone affected. Organizer
  * confirmation + a "you'll be refunded shortly" notice to every paid/used
  * ticket holder. The actual refunds are NOT run inline here (each is a real
  * Paystack call; doing hundreds synchronously inside this request risks a
- * timeout) — event-cancellation-refund-monitor.service.js sweeps them
+ * timeout). Event-cancellation-refund-monitor.service.js sweeps them
  * shortly after, the same "bounded batch, resumable across ticks" pattern
  * checkout-session-monitor.service.js already uses for bulk work.
  */
@@ -3692,6 +3755,14 @@ const initializeTicketPurchase = async ({
     throw new ApiError(400, "Select a valid ticket category before checkout");
   }
 
+  if (selectedCategory) {
+    const availability = resolveTicketCategoryAvailability(selectedCategory, now);
+
+    if (!availability.onSale) {
+      throw new ApiError(409, availability.reason);
+    }
+  }
+
   const reserved = isPresalePurchase
     ? await countReservedTickets(event._id, null, "presale")
     : await countReservedTickets(
@@ -3837,7 +3908,7 @@ const initializeTicketPurchase = async ({
 
   if (!event.isPaid || shouldBypassPaystack) {
     // These tickets were marked "paid" immediately above (free event, or
-    // dev-bypass) — finalizeTicketPurchasePayment is never called for them,
+    // dev-bypass). FinalizeTicketPurchasePayment is never called for them,
     // so this is the only place that credits the organizer's wallet for
     // this batch. Grouped in one transaction since they're all for the
     // same event/organizer; not joined with the ticket-issuance writes
@@ -4263,7 +4334,7 @@ const parseTicketScanCode = (inputCode) => {
 };
 
 /**
- * Pure ticket lookup by scanned code — no permission check, no mutation.
+ * Pure ticket lookup by scanned code. No permission check, no mutation.
  * Shared by the dashboard check-in flow, the Developer Platform API
  * check-in/verify flows, and anywhere else that needs "resolve a scan into
  * a ticket+event".
@@ -4319,7 +4390,7 @@ const findTicketByScanCode = async ({ code, eventId }) => {
  * The actual check-in transition (status/window validation + mutation),
  * shared by the dashboard path (after its own human ensureEventCanBeManagedBy
  * permission check) and the Developer Platform API path (after its own
- * workspace-ownership check) — the two entry points differ only in how they
+ * workspace-ownership check). The two entry points differ only in how they
  * authorize the caller, not in what check-in means.
  */
 // How long a ticket holder's self-reported location (from opening their
@@ -4329,21 +4400,70 @@ const findTicketByScanCode = async ({ code, eventId }) => {
 // meaningful. Documented judgment call, not derived from any spec.
 const HOLDER_LOCATION_STALE_MS = 30 * 60 * 1000;
 
+/**
+ * The check-in transition, shared by the live dashboard path and the offline
+ * batch sync.
+ *
+ * `scannedAt` is when the DOOR decided, which is not when the server hears
+ * about it. Every time-based rule below is evaluated against that moment.
+ * Otherwise a queue that syncs after the event would find its own window
+ * closed and reject admissions that were correct when they happened.
+ */
 const applyTicketCheckIn = async ({
   ticket,
   event,
   checkedInByUserId,
   override = false,
+  scannedAt = null,
+  deviceId = null,
+  via = "online",
+  clientSeq = null,
+  recordAttempt = false,
 }) => {
+  const decidedAt = scannedAt ? new Date(scannedAt) : new Date();
+
+  const logAttempt = async (result, extra = {}) => {
+    if (!recordAttempt) {
+      return;
+    }
+
+    try {
+      await CheckInAttempt.create({
+        eventId: event._id,
+        ticketId: ticket?._id ?? null,
+        scannedCode: ticket?.ticketCode ?? "",
+        deviceId,
+        actorUserId: checkedInByUserId,
+        result,
+        via,
+        scannedAt: decidedAt,
+        receivedAt: new Date(),
+        overridden: Boolean(override),
+        clientSeq,
+        ...extra,
+      });
+    } catch (error) {
+      // A duplicate (deviceId, clientSeq) means this entry already landed.
+      // The batch is being retried. That is the idempotency working, not a
+      // failure, so it must not abort the transition.
+      if (error?.code !== 11000) {
+        throw error;
+      }
+    }
+  };
+
   if (event.status !== "published") {
+    await logAttempt("invalid");
     throw new ApiError(409, "Only published events can check in attendees");
   }
 
   if (ticket.status === "cancelled" || ticket.status === "expired") {
+    await logAttempt("not_active");
     throw new ApiError(409, "This ticket is not active", null, "INVALID_TICKET");
   }
 
   if (ticket.status === "pending") {
+    await logAttempt("payment_pending");
     throw new ApiError(
       409,
       "Ticket payment is still pending",
@@ -4352,10 +4472,11 @@ const applyTicketCheckIn = async ({
     );
   }
 
-  const now = new Date();
+  const now = decidedAt;
   const window = toCheckInWindow(event, now);
 
   if (now < window.opensAt || now > window.closesAt) {
+    await logAttempt("outside_window");
     throw new ApiError(
       409,
       "Ticket check-in window is closed for this event",
@@ -4370,10 +4491,12 @@ const applyTicketCheckIn = async ({
   }
 
   // Already-checked-in tickets return early as a read-only "already used"
-  // response (no state change) — that idempotent re-scan must never fail
+  // response (no state change). That idempotent re-scan must never fail
   // geofence, so this check happens before the geofence enforcement below,
   // which only applies to an actual pending -> used transition.
   if (ticket.status === "used") {
+    await logAttempt("duplicate");
+
     return {
       ticket,
       alreadyUsed: true,
@@ -4383,7 +4506,7 @@ const applyTicketCheckIn = async ({
 
   // Geofencing is based on the TICKET HOLDER's own last self-reported
   // location (captured when they open their ticket pass), not the scanning
-  // staff member's device — checking whether staff are near the venue they
+  // staff member's device. Checking whether staff are near the venue they
   // work at is not a meaningful fraud signal. Only enforced when that
   // location exists and is fresh; a holder who never opened their ticket
   // recently (or denied location permission) is allowed through unchecked
@@ -4415,6 +4538,10 @@ const applyTicketCheckIn = async ({
     const outsideGeofence = distanceMeters > allowedRadiusMeters;
 
     if (outsideGeofence && !override) {
+      await logAttempt("outside_geofence", {
+        // Distance is the whole reason this was refused.
+        scannedCode: ticket.ticketCode,
+      });
       throw new ApiError(
         409,
         `The ticket holder appears to be ${Math.round(distanceMeters)}m from the event location`,
@@ -4442,10 +4569,13 @@ const applyTicketCheckIn = async ({
   ticket.status = "used";
   ticket.usedAt = now;
   ticket.usedByUserId = checkedInByUserId;
+  ticket.usedByDeviceId = deviceId;
+  ticket.usedVia = via;
   ticket.verifiedAt = ticket.verifiedAt || now;
   ticket.checkInLatitude = holderLatitude;
   ticket.checkInLongitude = holderLongitude;
   await ticket.save();
+  await logAttempt("admitted");
   await ticket.populate("usedByUserId", "fullName email avatarUrl title verificationBadge");
   await recomputeVerificationForEvent({ event });
 
@@ -4469,11 +4599,445 @@ const checkInTicket = async ({ actorUserId, payload }) => {
     event,
     checkedInByUserId: actorUserId,
     override: payload.override,
+    via: "online",
+    recordAttempt: true,
   });
 };
 
 /**
- * Developer Platform API check-in — same transition as the dashboard path,
+ * The key a door hashes scanned codes with. Derived per event from the server
+ * secret, so it is stable across roster refreshes and devices without being
+ * stored anywhere.
+ *
+ * The point is narrow and worth stating honestly: it keeps the roster on a
+ * door phone from being a copy-pasteable list of working ticket codes. It is
+ * not a defence against a compromised device. The device must hold the key
+ * to hash what it scans.
+ */
+const deriveRosterKey = (eventId) =>
+  crypto
+    .createHmac("sha256", env.jwtSecret)
+    .update(`checkin-roster:${String(eventId)}`)
+    .digest("hex");
+
+const hashTicketCode = (rosterKeyHex, ticketCode) =>
+  crypto
+    .createHmac("sha256", Buffer.from(rosterKeyHex, "hex"))
+    .update(String(ticketCode).trim().toUpperCase())
+    .digest("hex")
+    .slice(0, 32);
+
+/** "Amaka Obi" -> "Amaka O.". Enough for door staff, not a contact record. */
+const toDoorDisplayName = (fullName) => {
+  const parts = String(fullName || "").trim().split(/\s+/).filter(Boolean);
+
+  if (parts.length === 0) {
+    return "Ticket holder";
+  }
+
+  if (parts.length === 1) {
+    return parts[0];
+  }
+
+  return `${parts[0]} ${parts[parts.length - 1][0]}.`;
+};
+
+/**
+ * The offline roster: every code a door may admit, hashed, with just enough
+ * detail to run a door. A display name and a tier. No emails, no phone
+ * numbers, no ticket records.
+ *
+ * `since` returns a delta: what changed, plus what has been revoked, so a
+ * device with signal can stay current without re-downloading the event.
+ */
+const getCheckInRoster = async ({ eventId, actorUserId, since = null }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  const now = new Date();
+  const rosterKey = deriveRosterKey(event._id);
+  const sinceDate = since ? new Date(since) : null;
+  const isDelta = Boolean(sinceDate && !Number.isNaN(sinceDate.getTime()));
+
+  const baseQuery = { eventId: event._id };
+
+  if (isDelta) {
+    baseQuery.updatedAt = { $gt: sinceDate };
+  }
+
+  const rows = await EventTicket.find(baseQuery)
+    .select("ticketCode attendeeName ticketCategoryName status usedAt quantity")
+    .lean();
+
+  const admissible = new Set(["paid", "used"]);
+  const tickets = [];
+  const revoked = [];
+
+  for (const row of rows) {
+    const hash = hashTicketCode(rosterKey, row.ticketCode);
+
+    if (admissible.has(row.status)) {
+      tickets.push({
+        h: hash,
+        name: toDoorDisplayName(row.attendeeName),
+        tier: row.ticketCategoryName || "General admission",
+        seats: Number(row.quantity || 1),
+        // A device joining late still needs to know who is already inside.
+        usedAt: row.status === "used" ? row.usedAt : null,
+      });
+      continue;
+    }
+
+    // Refunded, cancelled or expired since the last sync.
+    revoked.push(hash);
+  }
+
+  const window = toCheckInWindow(event, now);
+
+  return {
+    serverTime: now.toISOString(),
+    isDelta,
+    rosterKey,
+    event: {
+      _id: String(event._id),
+      name: event.name,
+      startsAt: event.startsAt,
+      endsAt: event.endsAt,
+    },
+    window: {
+      opensAt: window.opensAt,
+      closesAt: window.closesAt,
+    },
+    tickets,
+    revoked,
+    totalTickets: tickets.length,
+  };
+};
+
+/**
+ * Syncs a door device's queued scans.
+ *
+ * Each entry is re-validated from scratch. The door's decision was made
+ * against a roster snapshot and is treated as provisional, so a code that was
+ * refunded mid-event, or never existed, is caught here rather than trusted.
+ *
+ * Conflicts resolve by ARRIVAL, not by timestamp: the first entry to reach
+ * the server performs the transition and later ones come back as duplicates.
+ * Resolving by `scannedAt` would mean trusting clocks on devices nobody
+ * controls, for an outcome that is identical either way. The attendee was
+ * admitted regardless. The timestamps are kept for the report, not the ruling.
+ *
+ * The whole batch never fails as a unit. One bad entry returns its own result
+ * and the rest still land, because a queue that cannot drain is a queue that
+ * grows.
+ */
+const batchCheckInTickets = async ({ eventId, actorUserId, payload }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  let device = null;
+
+  if (payload.deviceId) {
+    device = await CheckInDevice.findOne({
+      _id: payload.deviceId,
+      eventId: event._id,
+    });
+
+    if (!device) {
+      throw new ApiError(404, "Unknown check-in device for this event");
+    }
+
+    if (device.revokedAt) {
+      throw new ApiError(
+        403,
+        "This device has been revoked and can no longer sync",
+        null,
+        "DEVICE_REVOKED",
+      );
+    }
+  }
+
+  const results = [];
+
+  for (const entry of payload.entries) {
+    const base = { clientSeq: entry.clientSeq };
+
+    // A replay of an entry already stored is answered from the log rather
+    // than re-run, so a retried batch cannot double-apply anything.
+    if (device && entry.clientSeq !== undefined && entry.clientSeq !== null) {
+      const seen = await CheckInAttempt.findOne({
+        deviceId: device._id,
+        clientSeq: entry.clientSeq,
+      }).lean();
+
+      if (seen) {
+        results.push({ ...base, result: seen.result, replayed: true });
+        continue;
+      }
+    }
+
+    let resolved = null;
+
+    try {
+      resolved = await findTicketByScanCode({
+        code: entry.code,
+        eventId: String(event._id),
+      });
+    } catch (error) {
+      const result = error?.code === "TICKET_EVENT_MISMATCH" ? "wrong_event" : "invalid";
+
+      await CheckInAttempt.create({
+        eventId: event._id,
+        ticketId: null,
+        scannedCode: String(entry.code || "").slice(0, 600),
+        deviceId: device?._id ?? null,
+        actorUserId,
+        result,
+        via: "offline",
+        scannedAt: new Date(entry.scannedAt),
+        overridden: Boolean(entry.override),
+        clientSeq: entry.clientSeq ?? null,
+      }).catch(() => null);
+
+      results.push({ ...base, result });
+      continue;
+    }
+
+    try {
+      const outcome = await applyTicketCheckIn({
+        ticket: resolved.ticket,
+        event: resolved.event,
+        checkedInByUserId: actorUserId,
+        override: Boolean(entry.override),
+        scannedAt: entry.scannedAt,
+        deviceId: device?._id ?? null,
+        via: "offline",
+        clientSeq: entry.clientSeq ?? null,
+        recordAttempt: true,
+      });
+
+      if (outcome.alreadyUsed) {
+        // Tell the loser which door won, so reconciliation reads plainly.
+        const winner = resolved.ticket.usedByDeviceId
+          ? await CheckInDevice.findById(resolved.ticket.usedByDeviceId)
+              .select("label")
+              .lean()
+          : null;
+
+        results.push({
+          ...base,
+          result: "duplicate",
+          firstCheckedInAt: outcome.checkedInAt,
+          firstDeviceLabel: winner?.label ?? null,
+        });
+        continue;
+      }
+
+      results.push({
+        ...base,
+        result: "admitted",
+        checkedInAt: outcome.checkedInAt,
+      });
+    } catch (error) {
+      const byCode = {
+        CHECKIN_WINDOW_CLOSED: "outside_window",
+        INVALID_TICKET: "not_active",
+        TICKET_PAYMENT_PENDING: "payment_pending",
+        OUTSIDE_GEOFENCE: "outside_geofence",
+      };
+
+      results.push({
+        ...base,
+        result: byCode[error?.code] ?? "invalid",
+        message: error?.message ?? "Could not check this ticket in",
+      });
+    }
+  }
+
+  if (device) {
+    await CheckInDevice.updateOne(
+      { _id: device._id },
+      { $set: { lastSeenAt: new Date() } },
+    );
+  }
+
+  return {
+    eventId: String(event._id),
+    accepted: results.filter((item) => item.result === "admitted").length,
+    duplicates: results.filter((item) => item.result === "duplicate").length,
+    rejected: results.filter(
+      (item) => item.result !== "admitted" && item.result !== "duplicate",
+    ).length,
+    results,
+  };
+};
+
+/**
+ * Registers a scanning device as a named lane ("Door 2").
+ *
+ * Lanes matter for two reasons: an admission can be attributed to a physical
+ * position, which is what makes the conflicts report readable, and a phone
+ * that walks off can be revoked without disturbing the operator's own login.
+ */
+const registerCheckInDevice = async ({ eventId, actorUserId, payload }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  const label = String(payload.label || "").trim();
+
+  const existing = await CheckInDevice.findOne({
+    eventId: event._id,
+    label,
+    revokedAt: null,
+  });
+
+  // Re-registering the same lane returns it rather than creating a twin, so
+  // a door that clears its storage does not fragment its own history.
+  if (existing) {
+    return { device: existing, reused: true };
+  }
+
+  const device = await CheckInDevice.create({
+    eventId: event._id,
+    label,
+    createdByUserId: actorUserId,
+    lastSeenAt: new Date(),
+  });
+
+  return { device, reused: false };
+};
+
+const listCheckInDevices = async ({ eventId, actorUserId }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  const devices = await CheckInDevice.find({ eventId: event._id })
+    .sort({ createdAt: 1 })
+    .lean();
+
+  // How many each lane admitted, so the organizer can spot a door that has
+  // gone quiet, which usually means it is offline, not that nobody came.
+  const counts = await CheckInAttempt.aggregate([
+    { $match: { eventId: event._id, result: "admitted" } },
+    { $group: { _id: "$deviceId", admitted: { $sum: 1 } } },
+  ]);
+
+  const byDevice = new Map(
+    counts.map((row) => [String(row._id), row.admitted]),
+  );
+
+  return {
+    items: devices.map((device) => ({
+      _id: String(device._id),
+      label: device.label,
+      lastSeenAt: device.lastSeenAt,
+      revokedAt: device.revokedAt,
+      admitted: byDevice.get(String(device._id)) || 0,
+    })),
+  };
+};
+
+/**
+ * Revoking is deliberately not a delete: the lane's admissions stay attributed
+ * so the audit trail survives, but the device can no longer refresh its roster
+ * or sync anything new.
+ */
+const revokeCheckInDevice = async ({ eventId, deviceId, actorUserId }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  const device = await CheckInDevice.findOne({
+    _id: deviceId,
+    eventId: event._id,
+  });
+
+  if (!device) {
+    throw new ApiError(404, "Device not found for this event");
+  }
+
+  if (!device.revokedAt) {
+    device.revokedAt = new Date();
+    await device.save();
+  }
+
+  return { deviceId: String(device._id), revokedAt: device.revokedAt };
+};
+
+/**
+ * Tickets that more than one door admitted, for the reconciliation screen.
+ * Detection is worthless if nobody looks, so this has to be reachable.
+ */
+const listCheckInConflicts = async ({ eventId, actorUserId }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  const duplicates = await CheckInAttempt.find({
+    eventId: event._id,
+    result: "duplicate",
+    ticketId: { $ne: null },
+  })
+    .populate("ticketId", "ticketCode attendeeName ticketCategoryName usedAt")
+    .populate("deviceId", "label")
+    .sort({ scannedAt: -1 })
+    .limit(200)
+    .lean();
+
+  const items = await Promise.all(
+    duplicates.map(async (attempt) => {
+      const admitted = await CheckInAttempt.findOne({
+        ticketId: attempt.ticketId?._id,
+        result: "admitted",
+      })
+        .populate("deviceId", "label")
+        .lean();
+
+      return {
+        ticketCode: attempt.ticketId?.ticketCode ?? "",
+        attendeeName: attempt.ticketId?.attendeeName ?? "",
+        tier: attempt.ticketId?.ticketCategoryName ?? "",
+        admittedAt: admitted?.scannedAt ?? attempt.ticketId?.usedAt ?? null,
+        admittedLane: admitted?.deviceId?.label ?? null,
+        rescannedAt: attempt.scannedAt,
+        rescannedLane: attempt.deviceId?.label ?? null,
+      };
+    }),
+  );
+
+  return { items, totalItems: items.length };
+};
+
+/**
+ * Developer Platform API check-in. Same transition as the dashboard path,
  * but authorized by API-key workspace ownership rather than a human
  * membership role. There is no human actor, so the check-in is attributed
  * to the ticket's resolved organizer (which API key performed it lives in
@@ -4498,7 +5062,7 @@ const checkInTicketForWorkspace = async ({ workspaceId, payload }) => {
 };
 
 /**
- * Read-only counterpart to checkInTicketForWorkspace — resolves a scan to
+ * Read-only counterpart to checkInTicketForWorkspace. Resolves a scan to
  * usability info without mutating anything.
  */
 const verifyTicketByCode = async ({ code, eventId, workspaceId }) => {
@@ -4561,7 +5125,7 @@ const listMyTickets = async ({
   const trimmedPurchaseBatchId = String(purchaseBatchId || "").trim();
 
   if (trimmedPurchaseBatchId) {
-    // A batch filter means "show me everything from this purchase" — skip
+    // A batch filter means "show me everything from this purchase". Skip
     // the default status narrowing so a ticket isn't dropped from its own
     // post-checkout confirmation over a status technicality.
     query["paymentMetadata.purchaseBatchId"] = trimmedPurchaseBatchId;
@@ -4775,7 +5339,7 @@ const listOrganizerTicketSales = async ({
 };
 
 // Self-reported by the ticket's own owner (e.g. when they open their ticket
-// pass to be scanned) — feeds check-in geofencing (applyTicketCheckIn) in
+// pass to be scanned). Feeds check-in geofencing (applyTicketCheckIn) in
 // place of the scanning staff member's location.
 const reportTicketHolderLocation = async ({
   ticketId,
@@ -7338,6 +7902,12 @@ module.exports = {
   verifyTicketPayment,
   cancelTicketPayment,
   checkInTicket,
+  batchCheckInTickets,
+  listCheckInConflicts,
+  getCheckInRoster,
+  registerCheckInDevice,
+  listCheckInDevices,
+  revokeCheckInDevice,
   findTicketByScanCode,
   applyTicketCheckIn,
   checkInTicketForWorkspace,

@@ -1,7 +1,7 @@
 const ApiError = require("../utils/api-error");
 
 // Fallback machine-readable code when a thrown error doesn't set one
-// explicitly (error.code) — keeps every /v1 error response shaped the same
+// explicitly (error.code). Keeps every /v1 error response shaped the same
 // even for errors that predate this codes convention.
 const STATUS_CODE_FALLBACK = {
   400: "VALIDATION_ERROR",
@@ -16,7 +16,7 @@ const STATUS_CODE_FALLBACK = {
 
 /**
  * Stripe-style error envelope for the /v1 developer API:
- * {success:false, error:{code, message}} — deliberately parallel to, and
+ * {success:false, error:{code, message}}. Deliberately parallel to, and
  * never touching, the internal API's {success, message, details} shape in
  * error.middleware.js. Mounted as the trailing middleware inside
  * v1.routes.js so it only ever catches errors from that sub-router.

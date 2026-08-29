@@ -4,7 +4,7 @@ const { createUser, createEvent } = require("./fixtures");
 
 // createEvent's fixture defaults to an already-ended event; these tests
 // care about category matching, not date filtering, so give every event a
-// genuinely future window — otherwise the "hide ended events" behavior
+// genuinely future window. Otherwise the "hide ended events" behavior
 // (confirmed via event-visibility.test.js) would exclude them regardless
 // of category.
 const upcoming = () => ({

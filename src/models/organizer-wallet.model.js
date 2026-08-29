@@ -3,7 +3,7 @@ const { Schema, model } = require("mongoose");
 /**
  * One wallet per organizer. Balances here are the source of truth and are
  * only ever mutated via $inc alongside a WalletTransaction insert (see
- * wallet.service.js) — never recomputed from EventTicket records.
+ * wallet.service.js). Never recomputed from EventTicket records.
  */
 const organizerWalletSchema = new Schema(
   {

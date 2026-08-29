@@ -1,15 +1,15 @@
 const { listPublicEvents } = require("../services/event.service");
 const { createUser, createEvent } = require("./fixtures");
 
-// Lekki Phase 1, Lagos — reused from scripts/seed-events.js's location pool.
+// Lekki Phase 1, Lagos. Reused from scripts/seed-events.js's location pool.
 const LEKKI = { latitude: 6.4474, longitude: 3.4687 };
-// Wuse 2, Abuja — several hundred km from Lekki, well outside any
+// Wuse 2, Abuja. Several hundred km from Lekki, well outside any
 // reasonable "near me" radius.
 const ABUJA = { latitude: 9.0765, longitude: 7.4896 };
 
 // createEvent's fixture defaults to an already-ended event; these tests
 // care about geo matching, not date filtering, so give every event a
-// genuinely future window — otherwise the "hide ended events" behavior
+// genuinely future window. Otherwise the "hide ended events" behavior
 // (confirmed via event-visibility.test.js) would exclude them regardless
 // of location.
 const upcoming = () => ({
@@ -48,7 +48,7 @@ test("near-me query includes an event within the radius and excludes one far awa
 test("near-me query respects a widened radius", async () => {
   const organizer = await createUser();
 
-  // ~4km from LEKKI — inside a 10km radius, outside a 1km one.
+  // ~4km from LEKKI. Inside a 10km radius, outside a 1km one.
   const nearbyLat = LEKKI.latitude + 0.036;
 
   await createEvent({

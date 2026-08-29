@@ -15,7 +15,7 @@ const formatNaira = (naira) => `₦${Math.round(Number(naira || 0)).toLocaleStri
 /**
  * Refunds up to 50 still-active tickets for one cancelled event. Errors are
  * caught per-ticket (a single Paystack failure shouldn't block the rest of
- * the sweep) — the ticket's status stays paid/used on failure, so the next
+ * the sweep). The ticket's status stays paid/used on failure, so the next
  * tick simply retries it.
  */
 const sweepEventTickets = async (event) => {

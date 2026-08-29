@@ -6,7 +6,7 @@ const toSlug = (name) => slugify(name, { lower: true, strict: true, trim: true }
 
 // Checked explicitly (not left to the DB's unique index alone) since a
 // unique index on a freshly-created collection builds asynchronously in the
-// background — relying on it to reject a duplicate insert is a race the
+// background. Relying on it to reject a duplicate insert is a race the
 // very next request can lose. The unique index stays on the model as
 // defense in depth for genuine concurrent double-submits; this check makes
 // the common sequential case deterministic.

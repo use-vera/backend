@@ -11,8 +11,8 @@ const { initiatePaystackTransfer } = require("./paystack.service");
 /**
  * Reverses a withdrawal that was reserved but never completed (provider
  * transfer failed to initiate, or Paystack later reports transfer.failed).
- * Idempotent: only acts on a withdrawal still in reserved/processing —
- * calling it twice for the same withdrawal is a safe no-op the second time.
+ * Idempotent: only acts on a withdrawal still in reserved/processing.
+ * Calling it twice for the same withdrawal is a safe no-op the second time.
  */
 const reverseWithdrawal = async ({ withdrawalId, reason }) =>
   withMongoTransaction(async (session) => {
@@ -68,7 +68,7 @@ const reverseWithdrawal = async ({ withdrawalId, reason }) =>
 /**
  * Reserves the balance BEFORE calling Paystack (not after success) so a
  * second concurrent withdrawal request sees the already-reduced
- * availableBalanceKobo — the $gte filter below is what makes that race
+ * availableBalanceKobo. The $gte filter below is what makes that race
  * safe, not application-level locking.
  */
 const requestWithdrawal = async ({ organizerUserId, amountKobo }) => {
@@ -95,7 +95,7 @@ const requestWithdrawal = async ({ organizerUserId, amountKobo }) => {
   if (wallet.owingBalanceKobo > 0) {
     throw new ApiError(
       409,
-      "An outstanding balance is owed to the platform — clear it before withdrawing",
+      "An outstanding balance is owed to the platform. Clear it before withdrawing",
     );
   }
 
@@ -148,7 +148,7 @@ const requestWithdrawal = async ({ organizerUserId, amountKobo }) => {
     return createdWithdrawal;
   });
 
-  // Outside the DB transaction — the reservation above already committed,
+  // Outside the DB transaction. The reservation above already committed,
   // so a failure here must actively reverse it rather than roll back.
   try {
     const transferReference = `vera_withdrawal_${withdrawal._id}_${Date.now()}`;
@@ -174,7 +174,7 @@ const requestWithdrawal = async ({ organizerUserId, amountKobo }) => {
 
     throw new ApiError(
       502,
-      "Could not initiate the withdrawal transfer — your balance has been restored",
+      "Could not initiate the withdrawal transfer. Your balance has been restored",
       { cause: error instanceof Error ? error.message : String(error) },
     );
   }

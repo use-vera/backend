@@ -29,7 +29,7 @@ const listWorkspaceOrders = async ({ workspaceId, page = 1, limit = 20 }) => {
 const getWorkspaceOrder = async ({ workspaceId, ticketId }) => {
   const ticket = await EventTicket.findOne({ _id: ticketId, workspaceId });
 
-  // Cross-tenant orders 404 like they don't exist, not 403 — avoids leaking
+  // Cross-tenant orders 404 like they don't exist, not 403. Avoids leaking
   // that a ticket id belongs to someone else's workspace.
   if (!ticket) {
     throw new ApiError(404, "Order not found", null, "NOT_FOUND");

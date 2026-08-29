@@ -33,8 +33,8 @@ test("a valid publishable key can read events but not create a checkout session"
     .set("Authorization", `Bearer ${publishableKey}`);
   expect(readResponse.status).toBe(200);
 
-  // Capped to read-only regardless of what scopes are stored on the row —
-  // defense in depth for a key type meant to be embeddable client-side.
+  // Capped to read-only regardless of what scopes are stored on the row.
+  // Defense in depth for a key type meant to be embeddable client-side.
   const writeResponse = await request(app)
     .post("/v1/checkout/sessions")
     .set("Authorization", `Bearer ${publishableKey}`)
@@ -89,7 +89,7 @@ test("lastUsedAt updates after a successful request", async () => {
   expect(apiKey.lastUsedAt).toBeNull();
 
   await request(app).get("/v1/events").set("Authorization", `Bearer ${rawSecret}`);
-  // lastUsedAt update is fire-and-forget — give it a tick to land.
+  // lastUsedAt update is fire-and-forget. Give it a tick to land.
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   const refreshed = await ApiKey.findById(apiKey._id);

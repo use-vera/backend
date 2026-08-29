@@ -3,7 +3,7 @@ const { Schema, model } = require("mongoose");
 /**
  * Tracks a withdrawal through the async Paystack transfer lifecycle.
  * "reserved" means availableBalanceKobo has already been moved into the
- * wallet's reservedBalanceKobo (see withdrawal.service.js) — reservation
+ * wallet's reservedBalanceKobo (see withdrawal.service.js). Reservation
  * happens before the Paystack call, not after, to close the double-spend
  * race between concurrent withdrawal requests.
  */

@@ -1,5 +1,5 @@
 /**
- * The Confidence Engine — deliberately isolated from persistence, auth, and
+ * The Confidence Engine. Deliberately isolated from persistence, auth, and
  * notifications. It takes plain report data in and returns plain numbers
  * out, which is what makes it swappable later (e.g. for an ML-based
  * scorer) without touching orchestration, lifecycle, or notification code.
@@ -16,7 +16,7 @@
  *
  * Each report is recency-weighted using `updatedAt` (exponential decay,
  * half-life ~10 minutes) so older, un-renewed reports gradually lose
- * influence — a resubmission within the cooldown window refreshes a
+ * influence. A resubmission within the cooldown window refreshes a
  * report's `updatedAt` without changing its `createdAt`, which is what the
  * rate/spike signal uses instead (only genuinely new reports count as a
  * burst; renewals of an existing report aren't a second data point).
@@ -170,7 +170,7 @@ const computeConfidence = ({ reports, now, sensitivity = 1 }) => {
           (avgDistance - CLUSTER_TIGHT_METERS) / (CLUSTER_LOOSE_METERS - CLUSTER_TIGHT_METERS));
     }
   } else if (reports.length === 1) {
-    // A single report has no spread to measure — treat as neutral rather
+    // A single report has no spread to measure. Treat as neutral rather
     // than penalizing or rewarding clustering on a sample of one.
     clusterScore = 50;
   }

@@ -1,7 +1,7 @@
 const { Schema, model } = require("mongoose");
 
 /**
- * A single attendee's emergency report. Reports are never deleted — this
+ * A single attendee's emergency report. Reports are never deleted. This
  * is a safety record. A resubmission within the configured cooldown window
  * updates the attendee's existing report in place (see emergency.service.js)
  * rather than creating a new row, so `createdAt` stays fixed at first
@@ -74,7 +74,7 @@ const emergencyReportSchema = new Schema(
       trim: true,
       default: "",
     },
-    // Reserved for future use — no upload flow in this pass.
+    // Reserved for future use. No upload flow in this pass.
     mediaUrls: {
       type: [String],
       default: [],

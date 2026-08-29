@@ -7,7 +7,7 @@ const User = require("../models/user.model");
 /**
  * Resolves the Vera User a Developer Platform checkout purchase should be
  * attributed to. Third-party businesses' end customers won't already have a
- * Vera account, so this find-or-creates one directly — deliberately NOT
+ * Vera account, so this find-or-creates one directly. Deliberately NOT
  * reusing auth.service.js's registerUser, which issues real JWTs,
  * bootstraps a Workspace, and 409s on an existing email. An existing email
  * here is success (the same repeat buyer across integrations), not an
