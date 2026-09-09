@@ -5479,8 +5479,20 @@ const listMyTickets = async ({
     };
   });
 
+  /* One aggregate for the page, so a ticket row can say "+2 extras" without
+     the reader having to open it to find out. */
+  const addOnSummary = await addOnService.summariseByTicket(
+    normalizedItems.map((ticket) => ticket._id),
+  );
+
   return {
-    items: normalizedItems.map((ticket) => withClientTicketIdentity(ticket)),
+    items: normalizedItems.map((ticket) =>
+      withClientTicketIdentity(
+        Object.assign(ticket, {
+          addOnSummary: addOnSummary.get(String(ticket._id)) || null,
+        }),
+      ),
+    ),
     ...buildPaginationMeta({
       page: pageNumber,
       limit: limitNumber,

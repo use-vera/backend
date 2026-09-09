@@ -409,6 +409,47 @@ const summariseFulfilment = async ({ eventId, redemption = null }) => {
   }));
 };
 
+/**
+ * How many add-ons each of these tickets holds, and how many are still to
+ * collect. One aggregate for the whole page: a ticket list should be able to
+ * say "+2 extras" without a query per row.
+ */
+const summariseByTicket = async (ticketIds) => {
+  if (!ticketIds.length) {
+    return new Map();
+  }
+
+  const rows = await EventAddOnPurchase.aggregate([
+    {
+      $match: {
+        ticketId: {
+          $in: ticketIds.map((id) => new mongoose.Types.ObjectId(String(id))),
+        },
+        status: { $in: HOLDING_STATUSES },
+      },
+    },
+    {
+      $group: {
+        _id: "$ticketId",
+        count: { $sum: 1 },
+        quantity: { $sum: "$quantity" },
+        collected: { $sum: "$redeemedQuantity" },
+      },
+    },
+  ]);
+
+  return new Map(
+    rows.map((row) => [
+      String(row._id),
+      {
+        count: row.count,
+        quantity: row.quantity,
+        outstanding: Math.max(0, row.quantity - row.collected),
+      },
+    ]),
+  );
+};
+
 module.exports = {
   PENDING_HOLD_MS,
   countReservedAddOns,
@@ -421,5 +462,6 @@ module.exports = {
   listTicketAddOns,
   redeemAddOn,
   summariseFulfilment,
+  summariseByTicket,
   toIdString,
 };
