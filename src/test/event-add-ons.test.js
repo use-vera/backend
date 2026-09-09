@@ -454,3 +454,39 @@ describe("refunds", () => {
     expect(stillHeld.map((row) => row.name)).toEqual(["Parking"]);
   });
 });
+
+/* The service tests above call initializeTicketPurchase directly, which is
+   exactly why they missed a real bug: zod strips unknown keys, so an add-on
+   basket never reached the service and the buyer was charged for the ticket
+   alone while the app showed the full total. Only an HTTP test sees that. */
+test("the checkout route charges for the basket, not just the ticket", async () => {
+  const request = require("supertest");
+  const app = require("../app");
+  const { signAccessToken } = require("../utils/jwt");
+
+  const organizer = await createUser();
+  const buyer = await createUser();
+  const parking = addOn({ priceNaira: 5000, stock: 20, maxPerTicket: 1 });
+  const event = await sellingEvent(organizer._id, [parking]);
+
+  const response = await request(app)
+    .post(`/api/events/${event._id}/tickets/initialize`)
+    .set("Authorization", `Bearer ${signAccessToken({ userId: String(buyer._id) })}`)
+    .send({
+      quantity: 2,
+      email: "buyer@example.com",
+      addOns: [{ addOnId: String(parking._id), quantity: 2 }],
+    });
+
+  if (response.status !== 200 && response.status !== 201) {
+    console.error("CHECKOUT FAILED", response.status, response.body);
+  }
+
+  expect([200, 201]).toContain(response.status);
+
+  // The basket survived validation and became real rows.
+  const held = await EventAddOnPurchase.find({ eventId: event._id });
+  expect(held).toHaveLength(1);
+  expect(held[0].quantity).toBe(2);
+  expect(held[0].name).toBe("Parking");
+});

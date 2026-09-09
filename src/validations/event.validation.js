@@ -573,6 +573,19 @@ const initializeTicketPurchaseSchema = z.object({
   email: z.string().email().trim().max(160).optional(),
   attendeeName: z.string().trim().max(140).optional(),
   callbackUrl: z.string().trim().url().max(400).optional(),
+  // Without this the basket is stripped before the service ever sees it, and
+  // the buyer is charged for the ticket alone while the app shows the total.
+  addOns: z
+    .array(
+      z.object({
+        addOnId: z.string().trim().regex(/^[a-f\d]{24}$/i, "Invalid add-on id"),
+        variantName: z.string().trim().max(40).optional(),
+        quantity: z.coerce.number().int().min(1).max(20).optional().default(1),
+      }),
+    )
+    .max(20)
+    .optional()
+    .default([]),
 });
 
 const initializeResalePurchaseSchema = z.object({
