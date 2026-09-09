@@ -117,6 +117,59 @@ const emergencyConfigSchema = z.object({
   sensitivity: z.coerce.number().min(0.5).max(2).optional().default(1),
 });
 
+const addOnRedeemParamsSchema = z.object({
+  eventId: z.string().trim().regex(/^[a-f\d]{24}$/i, "Invalid event id"),
+  purchaseId: z.string().trim().regex(/^[a-f\d]{24}$/i, "Invalid add-on id"),
+});
+
+const addOnSchema = z
+  .object({
+    name: z.string().trim().min(1).max(60),
+    description: z.string().trim().max(180).optional().default(""),
+    priceNaira: z.coerce.number().min(0),
+    redemption: z.enum(["door", "desk", "none"]).optional().default("door"),
+    location: z.string().trim().max(120).optional().default(""),
+    stock: z.coerce.number().int().min(0).max(200000).optional().default(0),
+    variants: z
+      .array(
+        z.object({
+          name: z.string().trim().min(1).max(40),
+          stock: z.coerce.number().int().min(0).max(200000),
+        }),
+      )
+      .max(20)
+      .optional()
+      .default([]),
+    maxPerTicket: z.coerce.number().int().min(1).max(20).optional().default(1),
+    transfersOnResale: z.boolean().optional().default(true),
+    active: z.boolean().optional().default(true),
+  })
+  .superRefine((value, ctx) => {
+    if (value.variants.length) {
+      const names = value.variants.map((variant) => variant.name.toLowerCase());
+
+      if (new Set(names).size !== names.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["variants"],
+          message: "Each option needs its own name",
+        });
+      }
+
+      return;
+    }
+
+    /* Without variants the add-on's own stock is the only inventory there
+       is, so zero would mean a thing nobody can ever buy. */
+    if (value.stock < 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["stock"],
+        message: "Set how many of this you have, or add options with their own stock",
+      });
+    }
+  });
+
 const ticketCategorySchema = z
   .object({
     categoryId: z.string().trim().min(1).max(60).optional(),
@@ -174,6 +227,7 @@ const createEventSchema = z
     ticketPriceNaira: z.coerce.number().min(0).optional().default(0),
     expectedTickets: z.coerce.number().int().min(1).max(200000),
     ticketCategories: z.array(ticketCategorySchema).max(12).optional().default([]),
+    addOns: z.array(addOnSchema).max(20).optional().default([]),
     recurrence: recurrenceSchema.optional().default({ type: "none", interval: 1, daysOfWeek: [] }),
     pricing: pricingSchema.optional().default({
       dynamicEnabled: false,
@@ -388,6 +442,7 @@ const updateEventSchema = z
     ticketPriceNaira: z.coerce.number().min(0).optional(),
     expectedTickets: z.coerce.number().int().min(1).max(200000).optional(),
     ticketCategories: z.array(ticketCategorySchema).max(12).optional(),
+    addOns: z.array(addOnSchema).max(20).optional(),
     recurrence: recurrenceSchema.optional(),
     pricing: pricingSchema.optional(),
     resale: resalePolicySchema.optional(),
@@ -734,6 +789,7 @@ module.exports = {
   searchEventCentersQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
+  addOnRedeemParamsSchema,
   organizerIdParamsSchema,
   ticketIdParamsSchema,
   postIdParamsSchema,

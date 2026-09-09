@@ -147,6 +147,112 @@ const creditTicketSale = async ({ ticket, session, event: providedEvent = null }
   );
 };
 
+/**
+ * Credits one add-on line. Deliberately its own ledger row and its own
+ * idempotency key: a refund looks a ticket's sale up by ticketId, and every
+ * add-on shares its ticket's id, so folding these into ticket_sale would make
+ * a refund reverse the wrong amount.
+ */
+const creditAddOnSale = async ({ purchase, session, event: providedEvent = null }) => {
+  const idempotencyKey = `add_on_sale:${purchase._id}`;
+  const alreadyCredited = await WalletTransaction.exists({ idempotencyKey }).session(
+    session,
+  );
+
+  if (alreadyCredited) {
+    return;
+  }
+
+  const pricingBreakdown = purchase?.pricingBreakdown;
+
+  if (!pricingBreakdown) {
+    throw new ApiError(
+      500,
+      "Add-on is missing a pricing breakdown for wallet credit",
+      { addOnPurchaseId: purchase?._id },
+    );
+  }
+
+  const event =
+    providedEvent || (await Event.findById(purchase.eventId).session(session));
+
+  if (!event) {
+    throw new ApiError(500, "Event not found while crediting wallet", {
+      addOnPurchaseId: purchase._id,
+      eventId: purchase.eventId,
+    });
+  }
+
+  const organizer = await User.findById(purchase.organizerUserId)
+    .select("payoutTier")
+    .session(session);
+  const tierDelayHours = getSettlementDelayHours(organizer?.payoutTier);
+  const settlementEligibleAt = new Date(
+    new Date(event.endsAt).getTime() + tierDelayHours * 60 * 60 * 1000,
+  );
+
+  const wallet = await getOrCreateWallet(purchase.organizerUserId, session);
+  const saleAmountKobo = nairaToKobo(pricingBreakdown.organizerNetNaira);
+  const feeAmountKobo = nairaToKobo(pricingBreakdown.veraFeeNaira);
+
+  const [saleTransaction] = await WalletTransaction.create(
+    [
+      {
+        walletId: wallet._id,
+        organizerUserId: purchase.organizerUserId,
+        type: "add_on_sale",
+        amountKobo: saleAmountKobo,
+        bucket: "pending",
+        status: "pending_settlement",
+        settlementEligibleAt,
+        eventId: purchase.eventId,
+        ticketId: purchase.ticketId,
+        idempotencyKey,
+        description: `${purchase.name} sold with a ticket`,
+        metadata: {
+          pricingBreakdown,
+          addOnPurchaseId: String(purchase._id),
+          addOnName: purchase.name,
+          variantName: purchase.variantName || "",
+        },
+      },
+    ],
+    { session },
+  );
+
+  await OrganizerWallet.updateOne(
+    { _id: wallet._id },
+    {
+      $inc: {
+        pendingBalanceKobo: saleAmountKobo,
+        lifetimeGrossSalesKobo: nairaToKobo(pricingBreakdown.basePriceNaira),
+        lifetimePlatformFeesKobo: feeAmountKobo,
+        version: 1,
+      },
+    },
+    { session },
+  );
+
+  await WalletTransaction.create(
+    [
+      {
+        walletId: wallet._id,
+        organizerUserId: purchase.organizerUserId,
+        type: "platform_fee",
+        amountKobo: -feeAmountKobo,
+        bucket: "pending",
+        status: "completed",
+        eventId: purchase.eventId,
+        ticketId: purchase.ticketId,
+        sourceTransactionId: saleTransaction._id,
+        idempotencyKey: `platform_fee:add_on:${purchase._id}`,
+        description: "Vera platform fee for this add-on",
+      },
+    ],
+    { session },
+  );
+};
+
 const getWalletSummary = async (organizerUserId) =>
   getOrCreateWallet(organizerUserId);
 
@@ -204,6 +310,7 @@ module.exports = {
   buildPaginationMeta,
   getOrCreateWallet,
   creditTicketSale,
+  creditAddOnSale,
   getWalletSummary,
   listWalletTransactions,
   getWalletTransactionById,

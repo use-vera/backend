@@ -1,5 +1,7 @@
 const ApiError = require("../utils/api-error");
 const EventTicket = require("../models/event-ticket.model");
+const EventAddOnPurchase = require("../models/event-add-on-purchase.model");
+const Event = require("../models/event.model");
 const OrganizerWallet = require("../models/organizer-wallet.model");
 const WalletTransaction = require("../models/wallet-transaction.model");
 const { withMongoTransaction } = require("../utils/with-mongo-transaction");
@@ -162,4 +164,135 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
   return claimedTicket;
 };
 
-module.exports = { refundTicket };
+/**
+ * Reverses one add-on line.
+ *
+ * Its own function rather than a branch inside refundTicket because the
+ * amounts live on separate ledger rows: an add-on's credit is keyed
+ * `add_on_sale:<purchaseId>`, and every add-on shares its ticket's id, so
+ * looking one up by ticketId would reverse the wrong money.
+ *
+ * The attendee's cash is returned by the ticket's own Paystack refund when a
+ * whole order is cancelled; this reverses the organizer's side of it.
+ */
+const refundAddOnPurchase = async ({ purchaseId, reason }) => {
+  /* Atomic claim, so two sweeps cannot both reverse the same credit. */
+  const purchase = await EventAddOnPurchase.findOneAndUpdate(
+    { _id: purchaseId, status: { $in: ["paid", "redeemed"] } },
+    { $set: { status: "refunded", refundedAt: new Date() } },
+    { new: true },
+  );
+
+  if (!purchase) {
+    return null;
+  }
+
+  await withMongoTransaction(async (session) => {
+    const saleTransaction = await WalletTransaction.findOne({
+      idempotencyKey: `add_on_sale:${purchaseId}`,
+    }).session(session);
+
+    if (!saleTransaction) {
+      /* Crediting was off, or the line was free. Nothing on the ledger. */
+      return;
+    }
+
+    const wallet = await OrganizerWallet.findById(saleTransaction.walletId).session(
+      session,
+    );
+
+    if (!wallet) {
+      return;
+    }
+
+    const amountKobo = saleTransaction.amountKobo;
+    const isPreSettlement = saleTransaction.status === "pending_settlement";
+
+    if (isPreSettlement) {
+      await OrganizerWallet.updateOne(
+        { _id: wallet._id },
+        {
+          $inc: {
+            pendingBalanceKobo: -amountKobo,
+            lifetimeRefundedKobo: amountKobo,
+            version: 1,
+          },
+        },
+        { session },
+      );
+    } else {
+      const shortfallKobo = Math.max(0, amountKobo - wallet.availableBalanceKobo);
+      const availableDebitKobo = amountKobo - shortfallKobo;
+
+      await OrganizerWallet.updateOne(
+        { _id: wallet._id },
+        {
+          $inc: {
+            availableBalanceKobo: -availableDebitKobo,
+            owingBalanceKobo: shortfallKobo,
+            lifetimeRefundedKobo: amountKobo,
+            version: 1,
+          },
+        },
+        { session },
+      );
+    }
+
+    await WalletTransaction.create(
+      [
+        {
+          walletId: wallet._id,
+          organizerUserId: purchase.organizerUserId,
+          type: "refund",
+          amountKobo: -amountKobo,
+          bucket: isPreSettlement ? "pending" : "available",
+          status: "completed",
+          eventId: purchase.eventId,
+          ticketId: purchase.ticketId,
+          sourceTransactionId: saleTransaction._id,
+          idempotencyKey: `refund:add_on:${purchaseId}`,
+          description: `Refund (${purchase.name}): ${String(
+            reason || "requested",
+          ).slice(0, 160)}`,
+        },
+      ],
+      { session },
+    );
+  });
+
+  return purchase;
+};
+
+/** Every add-on still held against a ticket, optionally only the ones that
+ *  do not follow it to a new owner. */
+const refundTicketAddOns = async ({ ticketId, reason, onlyNonTransferable = false }) => {
+  const held = await EventAddOnPurchase.find({
+    ticketId,
+    status: { $in: ["paid", "redeemed"] },
+  });
+
+  const refunded = [];
+
+  for (const purchase of held) {
+    if (onlyNonTransferable) {
+      const event = await Event.findById(purchase.eventId).select("addOns");
+      const definition = (event?.addOns || []).find(
+        (addOn) => String(addOn._id) === String(purchase.addOnId),
+      );
+
+      if (definition?.transfersOnResale !== false) {
+        continue;
+      }
+    }
+
+    const result = await refundAddOnPurchase({ purchaseId: purchase._id, reason });
+
+    if (result) {
+      refunded.push(result);
+    }
+  }
+
+  return refunded;
+};
+
+module.exports = { refundTicket, refundAddOnPurchase, refundTicketAddOns };

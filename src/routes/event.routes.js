@@ -28,6 +28,7 @@ const {
   searchEventCentersQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
+  addOnRedeemParamsSchema,
   organizerIdParamsSchema,
   ticketIdParamsSchema,
   postIdParamsSchema,
@@ -94,6 +95,8 @@ const {
   batchCheckInController,
   listCheckInConflictsController,
   getCheckInRosterController,
+  redeemAddOnController,
+  getAddOnFulfilmentController,
   registerCheckInDeviceController,
   listCheckInDevicesController,
   revokeCheckInDeviceController,
@@ -345,6 +348,18 @@ router.get(
   validateParams(eventIdParamsSchema),
   validateQuery(slugQuerySchema),
   checkSlugController,
+);
+
+router.get(
+  "/:eventId/add-ons/fulfilment",
+  validateParams(eventIdParamsSchema),
+  getAddOnFulfilmentController,
+);
+
+router.post(
+  "/:eventId/add-ons/:purchaseId/redeem",
+  validateParams(addOnRedeemParamsSchema),
+  redeemAddOnController,
 );
 
 router.get(

@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 const env = require("../config/env");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
-const { refundTicket } = require("./refund.service");
+const { refundTicket, refundTicketAddOns } = require("./refund.service");
 const { createNotification } = require("./notification.service");
 
 let intervalHandle = null;
@@ -29,6 +29,13 @@ const sweepEventTickets = async (event) => {
       const result = await refundTicket({
         ticketId: ticket._id,
         actorUserId: event.organizerUserId,
+        reason: event.cancellationReason || "Event cancelled",
+      });
+
+      /* A cancelled event owes back the parking and the dinner too, not
+         just the ticket. Their wallet credits are separate ledger rows. */
+      await refundTicketAddOns({
+        ticketId: ticket._id,
         reason: event.cancellationReason || "Event cancelled",
       });
 

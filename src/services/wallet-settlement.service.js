@@ -69,7 +69,7 @@ const settleOneTransaction = async (transactionId) =>
   });
 
 /**
- * One tick: find pending_settlement ticket_sale/platform_fee transactions
+ * One tick: find pending_settlement sale and platform_fee transactions
  * whose settlementEligibleAt has passed, skip any tied to a cancelled event
  * (those go through the refund path instead), and settle the rest.
  */
@@ -77,7 +77,7 @@ const runSettlementTick = async ({ batchSize = DEFAULT_BATCH_SIZE } = {}) => {
   const now = new Date();
 
   const candidates = await WalletTransaction.find({
-    type: { $in: ["ticket_sale", "platform_fee"] },
+    type: { $in: ["ticket_sale", "add_on_sale", "platform_fee"] },
     status: "pending_settlement",
     settlementEligibleAt: { $lte: now },
   })

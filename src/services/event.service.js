@@ -14,6 +14,9 @@ const EventPostLike = require("../models/event-post-like.model");
 const EventPostComment = require("../models/event-post-comment.model");
 const EventReminderPreference = require("../models/event-reminder-preference.model");
 const TicketResaleBid = require("../models/ticket-resale-bid.model");
+const addOnService = require("./event-add-on.service");
+const EventAddOnPurchase = require("../models/event-add-on-purchase.model");
+const { refundTicketAddOns } = require("./refund.service");
 const TicketTodo = require("../models/ticket-todo.model");
 const PaymentAttempt = require("../models/payment-attempt.model");
 const Membership = require("../models/membership.model");
@@ -39,7 +42,7 @@ const {
   initializePaystackTransaction,
   verifyPaystackTransaction,
 } = require("./paystack.service");
-const { creditTicketSale } = require("./wallet.service");
+const { creditTicketSale, creditAddOnSale } = require("./wallet.service");
 const {
   finalizeWithdrawalSuccess,
   finalizeWithdrawalFailure,
@@ -57,6 +60,7 @@ const {
   DEFAULT_PLATFORM_FEE_PERCENT,
   normalizeEventFeeConfig,
   computePrimaryTicketPricing,
+  computeCheckoutTotals,
 } = require("./pricing.service");
 const {
   finalizePremiumSubscriptionPaymentAttempt,
@@ -649,6 +653,48 @@ const listEventCountries = async () => {
   );
 };
 
+/**
+ * Sold and pending per tier, in one pass. The list projection does not need
+ * this, so it is only paid for on a single event's detail response, where the
+ * resale rules and the tier picker both read it.
+ */
+/** Live remaining-per-option for one event's add-ons, keyed by add-on id. */
+const getAddOnAvailabilityMap = async (event) => {
+  const active = (event.addOns || []).filter((addOn) => addOn.active !== false);
+
+  if (!active.length) {
+    return null;
+  }
+
+  const entries = await Promise.all(
+    active.map(async (addOn) => [
+      String(addOn._id),
+      await addOnService.describeAddOnAvailability({ event, addOn }),
+    ]),
+  );
+
+  return new Map(entries);
+};
+
+const getTicketCategoryStatsMap = async (eventId) => {
+  const pendingCutoff = new Date(Date.now() - 30 * 60 * 1000);
+  const rows = await EventTicket.aggregate([
+    {
+      $match: {
+        eventId,
+        ticketCategoryId: { $ne: null },
+        $or: [
+          { status: { $in: ["paid", "used"] } },
+          { status: "pending", createdAt: { $gte: pendingCutoff } },
+        ],
+      },
+    },
+    { $group: { _id: "$ticketCategoryId", reserved: { $sum: "$quantity" } } },
+  ]);
+
+  return new Map(rows.map((row) => [String(row._id), Number(row.reserved || 0)]));
+};
+
 const getEventTicketStatsMap = async (eventIds) => {
   if (!eventIds.length) {
     return new Map();
@@ -987,6 +1033,8 @@ const mapEventForResponse = ({
   ratings,
   organizerBadge,
   followingInterestCount = 0,
+  categoryStats = null,
+  addOnAvailability = null,
   now = new Date(),
 }) => {
   const salePhase = resolveEventSalePhase(event, now);
@@ -1012,13 +1060,30 @@ const mapEventForResponse = ({
     // tier without re-deriving the window rules themselves.
     ticketCategories: (eventJson.ticketCategories || []).map((category) => {
       const availability = resolveTicketCategoryAvailability(category, now);
+      const released = Number(category.quantity || 0);
+      const reserved = categoryStats
+        ? Number(categoryStats.get(String(category._id)) || 0)
+        : null;
 
       return {
         ...category,
         onSale: availability.onSale,
         availabilityState: availability.state,
+        /* Null where the caller did not pay for the per-tier aggregate, so a
+           client can tell "none sold" apart from "not counted". */
+        soldCount: reserved,
+        remaining: reserved === null ? null : Math.max(0, released - reserved),
+        soldOut: reserved === null ? null : reserved >= released,
       };
     }),
+    /* Present on a single event's detail, where the stock aggregate is paid
+       for; the list projection ships the definitions without live counts. */
+    addOns: (eventJson.addOns || [])
+      .filter((addOn) => addOn.active !== false)
+      .map((addOn) => ({
+        ...addOn,
+        ...(addOnAvailability?.get(String(addOn._id)) || {}),
+      })),
     eventCenter: mapEventCenterForResponse(event),
     nextOccurrenceAt: occurrence.startsAt.toISOString(),
     nextOccurrenceEndsAt: occurrence.endsAt.toISOString(),
@@ -1367,6 +1432,7 @@ const createEvent = async ({ actorUserId, payload }) => {
     currency: "NGN",
     expectedTickets,
     ticketCategories,
+    addOns: Array.isArray(payload.addOns) ? payload.addOns : [],
     recurrence,
     pricing: payload.pricing || undefined,
     resale: payload.resale || undefined,
@@ -2315,6 +2381,27 @@ const finalizeTicketPurchasePayment = async ({
         }
       }
 
+      /* The add-ons bought in this checkout settle with it. Inside the same
+         transaction as the tickets so a half-credited order is not possible. */
+      const batchId = String(
+        resolvedPrimaryTicket?.paymentMetadata?.purchaseBatchId ||
+          ticket?.paymentMetadata?.purchaseBatchId ||
+          "",
+      ).trim();
+
+      if (batchId) {
+        const paidAddOns = await addOnService.markAddOnPurchasesPaid({
+          purchaseBatchId: batchId,
+          paymentReference,
+        });
+
+        if (env.walletCreditingEnabled) {
+          for (const purchase of paidAddOns) {
+            await creditAddOnSale({ purchase, session });
+          }
+        }
+      }
+
       await markPaymentAttemptVerified({
         paymentAttempt,
         paymentData,
@@ -2471,6 +2558,62 @@ const expireAcceptedResaleOfferById = async (ticketId, now = new Date()) => {
   return expireAcceptedResaleOffer({ ticket, now });
 };
 
+/**
+ * Resale opens only once the organizer's own inventory can no longer serve a
+ * buyer: the tier sold out, its window closed, or the event stopped selling.
+ *
+ * Without this a buyer could list a ticket minutes after buying it, at a
+ * markup, competing with the organizer for the same audience using stock the
+ * organizer still has on the shelf.
+ */
+const resolveResaleUnlock = async ({ event, ticket, now = new Date() }) => {
+  const access = resolveTicketSalesAccess(event, now);
+
+  /* "upcoming" is sales not started, which is not the same as stopped. */
+  if (!access.canPurchase && access.phase !== "upcoming") {
+    return { unlocked: true, reason: "" };
+  }
+
+  const categories = Array.isArray(event.ticketCategories)
+    ? event.ticketCategories
+    : [];
+  const tier = ticket.ticketCategoryId
+    ? categories.find(
+        (category) => String(category._id) === String(ticket.ticketCategoryId),
+      )
+    : null;
+
+  if (tier) {
+    if (resolveTicketCategoryAvailability(tier, now).state === "closed") {
+      return { unlocked: true, reason: "" };
+    }
+
+    const reserved = await countReservedTickets(event._id, tier._id);
+
+    if (reserved >= Number(tier.quantity || 0)) {
+      return { unlocked: true, reason: "" };
+    }
+
+    return {
+      unlocked: false,
+      reason: `"${tier.name}" is still on sale from the organizer. You can resell this ticket once that tier sells out or its sale window closes.`,
+    };
+  }
+
+  /* Base pricing: the event's own capacity is the only inventory there is. */
+  const reserved = await countReservedTickets(event._id);
+
+  if (reserved >= Number(event.expectedTickets || 0)) {
+    return { unlocked: true, reason: "" };
+  }
+
+  return {
+    unlocked: false,
+    reason:
+      "Tickets are still on sale from the organizer. You can resell this ticket once the event sells out or sales close.",
+  };
+};
+
 const ensureTicketEligibleForResale = async ({ ticket, actorUserId }) => {
   if (toIdString(ticket.buyerUserId) !== String(actorUserId)) {
     throw new ApiError(403, "Only the current ticket owner can resell this ticket");
@@ -2518,6 +2661,12 @@ const ensureTicketEligibleForResale = async ({ ticket, actorUserId }) => {
 
   if (salesWindow.state === "started") {
     throw new ApiError(409, "Resale closes once the event starts");
+  }
+
+  const unlock = await resolveResaleUnlock({ event, ticket });
+
+  if (!unlock.unlocked) {
+    throw new ApiError(409, unlock.reason, null, "RESALE_NOT_UNLOCKED");
   }
 
   return {
@@ -3062,7 +3211,7 @@ const getEventById = async ({ eventId, actorUserId }) => {
     endsAt: new Date(event.endsAt),
   };
 
-  const [statsMap, ratingsMap, myTickets, ratingsPreview, organizerProfile, featuredEvents, organizerBadgeMap, followingInterestMap] =
+  const [statsMap, ratingsMap, myTickets, ratingsPreview, organizerProfile, featuredEvents, organizerBadgeMap, followingInterestMap, categoryStats, addOnAvailability] =
     await Promise.all([
       getEventTicketStatsMap([event._id]),
       getEventRatingsSummaryMap([event._id], actorUserId),
@@ -3092,6 +3241,8 @@ const getEventById = async ({ eventId, actorUserId }) => {
       }),
       getOrganizerVerificationMap([toIdString(event.organizerUserId)]),
       getFollowingInterestMap({ eventIds: [event._id], actorUserId }),
+      getTicketCategoryStatsMap(event._id),
+      getAddOnAvailabilityMap(event),
     ]);
 
   const mappedEvent = mapEventForResponse({
@@ -3102,6 +3253,8 @@ const getEventById = async ({ eventId, actorUserId }) => {
     myTicket: myTickets[0] || null,
     organizerBadge: organizerBadgeMap.get(toIdString(event.organizerUserId)),
     followingInterestCount: followingInterestMap.get(String(event._id)) || 0,
+    categoryStats,
+    addOnAvailability,
     now,
   });
 
@@ -3271,7 +3424,7 @@ const getPublicEventById = async ({ eventId }) => {
     endsAt: new Date(event.endsAt),
   };
 
-  const [statsMap, ratingsMap, ratingsPreview, organizerBadgeMap] =
+  const [statsMap, ratingsMap, ratingsPreview, organizerBadgeMap, categoryStats, addOnAvailability] =
     await Promise.all([
       getEventTicketStatsMap([event._id]),
       getEventRatingsSummaryMap([event._id], undefined),
@@ -3280,6 +3433,8 @@ const getPublicEventById = async ({ eventId }) => {
         .sort({ createdAt: -1 })
         .limit(8),
       getOrganizerVerificationMap([toIdString(event.organizerUserId)]),
+      getTicketCategoryStatsMap(event._id),
+      getAddOnAvailabilityMap(event),
     ]);
 
   const mappedEvent = mapEventForResponse({
@@ -3288,6 +3443,8 @@ const getPublicEventById = async ({ eventId }) => {
     stats: statsMap.get(String(event._id)),
     ratings: ratingsMap.get(String(event._id)),
     organizerBadge: organizerBadgeMap.get(toIdString(event.organizerUserId)),
+    categoryStats,
+    addOnAvailability,
     now,
   });
 
@@ -3298,6 +3455,46 @@ const getPublicEventById = async ({ eventId }) => {
       ratingsCount: mappedEvent.ratingsCount,
       items: ratingsPreview,
     },
+  };
+};
+
+/**
+ * Hands an add-on over at a door or a desk. Ownership is checked against the
+ * event rather than the row so a scanner cannot redeem another event's stock.
+ */
+const redeemTicketAddOn = async ({ eventId, purchaseId, actorUserId }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  const purchase = await EventAddOnPurchase.findById(purchaseId);
+
+  if (!purchase || String(purchase.eventId) !== String(event._id)) {
+    throw new ApiError(404, "That add-on is not on this event");
+  }
+
+  return addOnService.redeemAddOn({ purchaseId, actorUserId });
+};
+
+/** What each desk still owes, grouped the way a table is actually worked. */
+const getEventAddOnFulfilment = async ({ eventId, actorUserId, redemption }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  return {
+    items: await addOnService.summariseFulfilment({
+      eventId: event._id,
+      redemption: redemption || null,
+    }),
   };
 };
 
@@ -3816,6 +4013,14 @@ const initializeTicketPurchase = async ({
     );
   }
 
+  /* Resolved after the ticket's own stock checks: an add-on must never be
+     sold against a ticket that could not be issued. */
+  const addOnLines = await addOnService.resolveAddOnSelection({
+    event,
+    requested: Array.isArray(payload.addOns) ? payload.addOns : [],
+    ticketQuantity: quantity,
+  });
+
   const dynamicPricing = getDynamicTicketPricing({
     event,
     occurrence,
@@ -3839,7 +4044,13 @@ const initializeTicketPurchase = async ({
     feeMode: event.feeMode || "absorbed_by_organizer",
   });
   const checkoutUnitPriceNaira = pricingBreakdown.unitCheckoutPriceNaira;
-  const totalCheckoutNaira = pricingBreakdown.totalCheckoutNaira;
+  /* The ticket's own breakdown is untouched. Add-ons are summed on top, so
+     what Paystack is asked for is the whole basket. */
+  const checkoutTotals = computeCheckoutTotals({
+    ticketPricing: pricingBreakdown,
+    addOnPricings: addOnLines.map((line) => line.pricingBreakdown),
+  });
+  const totalCheckoutNaira = checkoutTotals.totalCheckoutNaira;
   const attendeeEmail = String(payload.email || buyer.email || "").trim().toLowerCase();
 
   if (!attendeeEmail) {
@@ -3872,6 +4083,24 @@ const initializeTicketPurchase = async ({
         },
       },
     );
+
+    /* Restarting checkout must release the add-on stock the abandoned
+       attempt was holding, not just the tickets. */
+    const stale = await EventTicket.find({
+      eventId: event._id,
+      buyerUserId: actorUserId,
+      status: "cancelled",
+      "paymentMetadata.cancelReason": "checkout_restarted",
+    })
+      .select("paymentMetadata.purchaseBatchId")
+      .lean();
+
+    for (const row of stale) {
+      await addOnService.cancelAddOnPurchases({
+        purchaseBatchId: row.paymentMetadata?.purchaseBatchId,
+        reason: "checkout_restarted",
+      });
+    }
   }
 
   const purchaseBatchId = buildPurchaseBatchId();
@@ -3906,6 +4135,17 @@ const initializeTicketPurchase = async ({
 
   const primaryTicket = issuedTickets[0];
 
+  /* Add-ons hang off the order's primary ticket. They ride its lifecycle:
+     pending beside a pending ticket, paid when the payment settles. */
+  const addOnPurchases = await addOnService.createAddOnPurchases({
+    event,
+    ticket: primaryTicket,
+    buyerUserId: actorUserId,
+    lines: addOnLines,
+    status: initialTicketStatus === "paid" ? "paid" : "pending",
+    purchaseBatchId,
+  });
+
   if (!event.isPaid || shouldBypassPaystack) {
     // These tickets were marked "paid" immediately above (free event, or
     // dev-bypass). FinalizeTicketPurchasePayment is never called for them,
@@ -3919,6 +4159,10 @@ const initializeTicketPurchase = async ({
       await withMongoTransaction(async (session) => {
         for (const issuedTicket of issuedTickets) {
           await creditTicketSale({ ticket: issuedTicket, event, session });
+        }
+
+        for (const purchase of addOnPurchases) {
+          await creditAddOnSale({ purchase, event, session });
         }
       });
     }
@@ -4594,7 +4838,7 @@ const checkInTicket = async ({ actorUserId, payload }) => {
 
   await ensureEventCanBeManagedBy(event, actorUserId);
 
-  return applyTicketCheckIn({
+  const result = await applyTicketCheckIn({
     ticket,
     event,
     checkedInByUserId: actorUserId,
@@ -4602,6 +4846,12 @@ const checkInTicket = async ({ actorUserId, payload }) => {
     via: "online",
     recordAttempt: true,
   });
+
+  /* A door needs to see what else the person is holding, and to hand over
+     the items that belong to this door, without a second lookup. */
+  const addOns = await addOnService.listTicketAddOns({ ticketId: ticket._id });
+
+  return { ...result, addOns: addOns.map((row) => row.toObject()) };
 };
 
 /**
@@ -5382,7 +5632,13 @@ const getTicketById = async ({ ticketId, actorUserId }) => {
     throw new ApiError(403, "You cannot access this ticket");
   }
 
-  return ticket;
+  /* The holder's screen and a door both open on "what else is on this
+     ticket", so the add-ons travel with it rather than needing a second call. */
+  const addOns = await addOnService.listTicketAddOns({ ticketId: ticket._id });
+
+  return Object.assign(ticket.toObject ? ticket.toObject() : ticket, {
+    addOns: addOns.map((row) => row.toObject()),
+  });
 };
 
 const listEventResaleMarketplace = async ({
@@ -5997,6 +6253,20 @@ const purchaseResaleTicket = async ({
     });
 
     transferredTicketId = createdTicket._id;
+
+    /* Add-ons follow the ticket only where the organizer said they should.
+       A sized shirt stays with the person who chose the size, so the seller
+       is refunded for it rather than handing it to a stranger. */
+    await refundTicketAddOns({
+      ticketId: ticket._id,
+      reason: "Ticket resold",
+      onlyNonTransferable: true,
+    });
+
+    await EventAddOnPurchase.updateMany(
+      { ticketId: ticket._id, status: { $in: ["paid", "redeemed"] } },
+      { $set: { ticketId: createdTicket._id, buyerUserId: buyer._id } },
+    );
 
     await EventTicket.updateOne(
       { _id: ticket._id },
@@ -7905,6 +8175,8 @@ module.exports = {
   batchCheckInTickets,
   listCheckInConflicts,
   getCheckInRoster,
+  redeemTicketAddOn,
+  getEventAddOnFulfilment,
   registerCheckInDevice,
   listCheckInDevices,
   revokeCheckInDevice,

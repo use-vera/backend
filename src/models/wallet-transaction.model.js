@@ -27,6 +27,9 @@ const walletTransactionSchema = new Schema(
       type: String,
       enum: [
         "ticket_sale",
+        // Distinct from ticket_sale on purpose: refunds look a ticket's sale
+        // row up by ticketId, and add-ons share their ticket's id.
+        "add_on_sale",
         "platform_fee",
         "refund",
         "chargeback",

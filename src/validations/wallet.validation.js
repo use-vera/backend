@@ -9,6 +9,7 @@ const listWalletTransactionsQuerySchema = z.object({
     .enum([
       "all",
       "ticket_sale",
+      "add_on_sale",
       "platform_fee",
       "refund",
       "chargeback",

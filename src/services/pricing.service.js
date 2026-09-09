@@ -69,9 +69,64 @@ const computePrimaryTicketPricing = ({
   };
 };
 
+/**
+ * One add-on line, priced by exactly the rules a ticket uses.
+ *
+ * Deliberately a separate call rather than an extra branch inside
+ * computePrimaryTicketPricing: that function's output is what the wallet
+ * settles against, and its shape must not move. Each add-on line carries its
+ * own breakdown and is credited on its own.
+ */
+const computeAddOnPricing = ({
+  unitPriceNaira = 0,
+  quantity = 1,
+  platformFeePercent = DEFAULT_PLATFORM_FEE_PERCENT,
+  feeMode = "absorbed_by_organizer",
+} = {}) =>
+  computePrimaryTicketPricing({
+    baseUnitPriceNaira: unitPriceNaira,
+    quantity,
+    platformFeePercent,
+    feeMode,
+  });
+
+/**
+ * What the buyer is charged for a whole basket, and what the organizer keeps.
+ * The ticket's own breakdown is passed through untouched so callers that only
+ * care about tickets keep reading exactly what they read before.
+ */
+const computeCheckoutTotals = ({ ticketPricing, addOnPricings = [] }) => {
+  const addOnTotals = addOnPricings.reduce(
+    (sum, line) => ({
+      basePriceNaira: sum.basePriceNaira + line.totalBasePriceNaira,
+      veraFeeNaira: sum.veraFeeNaira + line.totalVeraFeeNaira,
+      totalCheckoutNaira: sum.totalCheckoutNaira + line.totalCheckoutNaira,
+      organizerNetNaira: sum.organizerNetNaira + line.organizerNetNaira,
+    }),
+    {
+      basePriceNaira: 0,
+      veraFeeNaira: 0,
+      totalCheckoutNaira: 0,
+      organizerNetNaira: 0,
+    },
+  );
+
+  return {
+    ticket: ticketPricing,
+    addOns: addOnTotals,
+    totalCheckoutNaira:
+      ticketPricing.totalCheckoutNaira + addOnTotals.totalCheckoutNaira,
+    organizerNetNaira:
+      ticketPricing.organizerNetNaira + addOnTotals.organizerNetNaira,
+    veraFeeNaira: ticketPricing.veraFeeNaira + addOnTotals.veraFeeNaira,
+  };
+};
+
 module.exports = {
   DEFAULT_PLATFORM_FEE_PERCENT,
   SUPPORTED_FEE_MODES,
   normalizeEventFeeConfig,
   computePrimaryTicketPricing,
+  computeAddOnPricing,
+  computeCheckoutTotals,
 };

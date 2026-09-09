@@ -21,6 +21,8 @@ const {
   batchCheckInTickets,
   listCheckInConflicts,
   getCheckInRoster,
+  redeemTicketAddOn,
+  getEventAddOnFulfilment,
   registerCheckInDevice,
   listCheckInDevices,
   revokeCheckInDevice,
@@ -586,6 +588,34 @@ const checkInTicketController = asyncHandler(async (req, res) => {
   });
 });
 
+const redeemAddOnController = asyncHandler(async (req, res) => {
+  const result = await redeemTicketAddOn({
+    eventId: req.params.eventId,
+    purchaseId: req.params.purchaseId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: `${result.name} handed over`,
+    data: result,
+  });
+});
+
+const getAddOnFulfilmentController = asyncHandler(async (req, res) => {
+  const result = await getEventAddOnFulfilment({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+    redemption: req.query.redemption,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Add-on fulfilment fetched",
+    data: result,
+  });
+});
+
 const getCheckInRosterController = asyncHandler(async (req, res) => {
   const result = await getCheckInRoster({
     eventId: req.params.eventId,
@@ -963,6 +993,8 @@ module.exports = {
   batchCheckInController,
   listCheckInConflictsController,
   getCheckInRosterController,
+  redeemAddOnController,
+  getAddOnFulfilmentController,
   registerCheckInDeviceController,
   listCheckInDevicesController,
   revokeCheckInDeviceController,

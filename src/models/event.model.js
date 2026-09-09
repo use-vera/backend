@@ -178,6 +178,96 @@ const emergencySchema = new Schema(
   { _id: false },
 );
 
+const addOnVariantSchema = new Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 40,
+    },
+    stock: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 200000,
+    },
+  },
+  { _id: true },
+);
+
+/**
+ * Something sold alongside a ticket: parking, dinner, a shirt.
+ *
+ * `redemption` is the field that does the work. It decides which staff screen
+ * an item appears on, and it is the line that keeps Vera out of shipping:
+ * everything sellable here is collected at the event, so there is no address,
+ * no carrier and no delivery dispute.
+ */
+const addOnSchema = new Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      minlength: 1,
+      maxlength: 60,
+    },
+    description: {
+      type: String,
+      trim: true,
+      maxlength: 180,
+      default: "",
+    },
+    priceNaira: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    redemption: {
+      type: String,
+      enum: ["door", "desk", "none"],
+      default: "door",
+    },
+    // Printed on the buyer's ticket so staff are not asked where to go.
+    location: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+      default: "",
+    },
+    // Stock when there are no variants. Ignored when there are: each variant
+    // carries its own, because "14 mediums left" is the number that matters.
+    stock: {
+      type: Number,
+      min: 0,
+      max: 200000,
+      default: 0,
+    },
+    variants: {
+      type: [addOnVariantSchema],
+      default: [],
+    },
+    maxPerTicket: {
+      type: Number,
+      min: 1,
+      max: 20,
+      default: 1,
+    },
+    // Parking usually follows a resold ticket; a sized shirt usually should
+    // not. The organizer decides, and whatever does not transfer is refunded.
+    transfersOnResale: {
+      type: Boolean,
+      default: true,
+    },
+    active: {
+      type: Boolean,
+      default: true,
+    },
+  },
+  { _id: true },
+);
+
 const ticketCategorySchema = new Schema(
   {
     name: {
@@ -369,6 +459,10 @@ const eventSchema = new Schema(
     },
     ticketCategories: {
       type: [ticketCategorySchema],
+      default: [],
+    },
+    addOns: {
+      type: [addOnSchema],
       default: [],
     },
     recurrence: {
