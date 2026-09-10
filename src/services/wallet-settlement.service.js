@@ -77,7 +77,7 @@ const runSettlementTick = async ({ batchSize = DEFAULT_BATCH_SIZE } = {}) => {
   const now = new Date();
 
   const candidates = await WalletTransaction.find({
-    type: { $in: ["ticket_sale", "add_on_sale", "platform_fee"] },
+    type: { $in: ["ticket_sale", "add_on_sale", "ticket_upgrade", "platform_fee"] },
     status: "pending_settlement",
     settlementEligibleAt: { $lte: now },
   })

@@ -253,6 +253,101 @@ const creditAddOnSale = async ({ purchase, session, event: providedEvent = null 
   );
 };
 
+/**
+ * Credits the difference a holder paid to move up a tier. Its own row and its
+ * own key: the ticket already carries a `ticket_sale` credit for what it
+ * originally cost, and a refund looks that one up by ticketId.
+ */
+const creditTicketUpgrade = async ({ ticket, pricingBreakdown, session, event: providedEvent = null }) => {
+  const idempotencyKey = `ticket_upgrade:${ticket._id}:${ticket.paymentReference || "none"}`;
+  const alreadyCredited = await WalletTransaction.exists({ idempotencyKey }).session(
+    session,
+  );
+
+  if (alreadyCredited) {
+    return;
+  }
+
+  if (!pricingBreakdown) {
+    throw new ApiError(500, "Upgrade is missing a pricing breakdown", {
+      ticketId: ticket?._id,
+    });
+  }
+
+  const event =
+    providedEvent || (await Event.findById(ticket.eventId).session(session));
+
+  if (!event) {
+    throw new ApiError(500, "Event not found while crediting an upgrade", {
+      ticketId: ticket._id,
+    });
+  }
+
+  const organizer = await User.findById(ticket.organizerUserId)
+    .select("payoutTier")
+    .session(session);
+  const settlementEligibleAt = new Date(
+    new Date(event.endsAt).getTime() +
+      getSettlementDelayHours(organizer?.payoutTier) * 60 * 60 * 1000,
+  );
+
+  const wallet = await getOrCreateWallet(ticket.organizerUserId, session);
+  const saleAmountKobo = nairaToKobo(pricingBreakdown.organizerNetNaira);
+  const feeAmountKobo = nairaToKobo(pricingBreakdown.veraFeeNaira);
+
+  const [saleTransaction] = await WalletTransaction.create(
+    [
+      {
+        walletId: wallet._id,
+        organizerUserId: ticket.organizerUserId,
+        type: "ticket_upgrade",
+        amountKobo: saleAmountKobo,
+        bucket: "pending",
+        status: "pending_settlement",
+        settlementEligibleAt,
+        eventId: ticket.eventId,
+        ticketId: ticket._id,
+        idempotencyKey,
+        description: "Tier upgrade credited to pending balance",
+        metadata: { pricingBreakdown },
+      },
+    ],
+    { session },
+  );
+
+  await OrganizerWallet.updateOne(
+    { _id: wallet._id },
+    {
+      $inc: {
+        pendingBalanceKobo: saleAmountKobo,
+        lifetimeGrossSalesKobo: nairaToKobo(pricingBreakdown.basePriceNaira),
+        lifetimePlatformFeesKobo: feeAmountKobo,
+        version: 1,
+      },
+    },
+    { session },
+  );
+
+  await WalletTransaction.create(
+    [
+      {
+        walletId: wallet._id,
+        organizerUserId: ticket.organizerUserId,
+        type: "platform_fee",
+        amountKobo: -feeAmountKobo,
+        bucket: "pending",
+        status: "completed",
+        eventId: ticket.eventId,
+        ticketId: ticket._id,
+        sourceTransactionId: saleTransaction._id,
+        idempotencyKey: `platform_fee:upgrade:${ticket._id}:${ticket.paymentReference || "none"}`,
+        description: "Vera platform fee for this upgrade",
+      },
+    ],
+    { session },
+  );
+};
+
 const getWalletSummary = async (organizerUserId) =>
   getOrCreateWallet(organizerUserId);
 
@@ -311,6 +406,7 @@ module.exports = {
   getOrCreateWallet,
   creditTicketSale,
   creditAddOnSale,
+  creditTicketUpgrade,
   getWalletSummary,
   listWalletTransactions,
   getWalletTransactionById,

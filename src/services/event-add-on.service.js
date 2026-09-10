@@ -410,45 +410,45 @@ const summariseFulfilment = async ({ eventId, redemption = null }) => {
 };
 
 /**
- * How many add-ons each of these tickets holds, and how many are still to
- * collect. One aggregate for the whole page: a ticket list should be able to
- * say "+2 extras" without a query per row.
+ * The add-ons held against each of these tickets, keyed by ticket id.
+ *
+ * Returns the rows rather than a count: a ticket screen has to name what you
+ * bought and where to collect it, and the count alone sent it back for a
+ * second request. One query for the whole page either way.
  */
-const summariseByTicket = async (ticketIds) => {
+const listByTickets = async (ticketIds) => {
   if (!ticketIds.length) {
     return new Map();
   }
 
-  const rows = await EventAddOnPurchase.aggregate([
-    {
-      $match: {
-        ticketId: {
-          $in: ticketIds.map((id) => new mongoose.Types.ObjectId(String(id))),
-        },
-        status: { $in: HOLDING_STATUSES },
-      },
-    },
-    {
-      $group: {
-        _id: "$ticketId",
-        count: { $sum: 1 },
-        quantity: { $sum: "$quantity" },
-        collected: { $sum: "$redeemedQuantity" },
-      },
-    },
-  ]);
+  const rows = await EventAddOnPurchase.find({
+    ticketId: { $in: ticketIds },
+    status: { $in: HOLDING_STATUSES },
+  })
+    .sort({ createdAt: 1 })
+    .lean();
 
-  return new Map(
-    rows.map((row) => [
-      String(row._id),
-      {
-        count: row.count,
-        quantity: row.quantity,
-        outstanding: Math.max(0, row.quantity - row.collected),
-      },
-    ]),
-  );
+  const byTicket = new Map();
+
+  for (const row of rows) {
+    const key = String(row.ticketId);
+
+    byTicket.set(key, [...(byTicket.get(key) || []), row]);
+  }
+
+  return byTicket;
 };
+
+/** The roll-up a compact row needs, derived from the same fetch. */
+const summariseRows = (rows = []) => ({
+  count: rows.length,
+  quantity: rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0),
+  outstanding: rows.reduce(
+    (sum, row) =>
+      sum + Math.max(0, Number(row.quantity || 0) - Number(row.redeemedQuantity || 0)),
+    0,
+  ),
+});
 
 module.exports = {
   PENDING_HOLD_MS,
@@ -462,6 +462,7 @@ module.exports = {
   listTicketAddOns,
   redeemAddOn,
   summariseFulfilment,
-  summariseByTicket,
+  listByTickets,
+  summariseRows,
   toIdString,
 };

@@ -117,6 +117,11 @@ const emergencyConfigSchema = z.object({
   sensitivity: z.coerce.number().min(0.5).max(2).optional().default(1),
 });
 
+const initializeTicketUpgradeSchema = z.object({
+  ticketCategoryId: z.string().trim().regex(/^[a-f\d]{24}$/i, "Invalid tier id"),
+  callbackUrl: z.string().trim().url().max(400).optional(),
+});
+
 const addOnRedeemParamsSchema = z.object({
   eventId: z.string().trim().regex(/^[a-f\d]{24}$/i, "Invalid event id"),
   purchaseId: z.string().trim().regex(/^[a-f\d]{24}$/i, "Invalid add-on id"),
@@ -803,6 +808,7 @@ module.exports = {
   listMyEventsQuerySchema,
   eventIdParamsSchema,
   addOnRedeemParamsSchema,
+  initializeTicketUpgradeSchema,
   organizerIdParamsSchema,
   ticketIdParamsSchema,
   postIdParamsSchema,

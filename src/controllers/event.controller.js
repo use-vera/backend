@@ -22,6 +22,8 @@ const {
   listCheckInConflicts,
   getCheckInRoster,
   redeemTicketAddOn,
+  listTicketUpgradeOptions,
+  initializeTicketUpgrade,
   getEventAddOnFulfilment,
   registerCheckInDevice,
   listCheckInDevices,
@@ -588,6 +590,35 @@ const checkInTicketController = asyncHandler(async (req, res) => {
   });
 });
 
+const listTicketUpgradeOptionsController = asyncHandler(async (req, res) => {
+  const result = await listTicketUpgradeOptions({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Upgrade options fetched",
+    data: result,
+  });
+});
+
+const initializeTicketUpgradeController = asyncHandler(async (req, res) => {
+  const result = await initializeTicketUpgrade({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+    payload: req.body,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: result.requiresPayment
+      ? "Upgrade payment initialized"
+      : "Ticket upgraded",
+    data: result,
+  });
+});
+
 const redeemAddOnController = asyncHandler(async (req, res) => {
   const result = await redeemTicketAddOn({
     eventId: req.params.eventId,
@@ -994,6 +1025,8 @@ module.exports = {
   listCheckInConflictsController,
   getCheckInRosterController,
   redeemAddOnController,
+  listTicketUpgradeOptionsController,
+  initializeTicketUpgradeController,
   getAddOnFulfilmentController,
   registerCheckInDeviceController,
   listCheckInDevicesController,

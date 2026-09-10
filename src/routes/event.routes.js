@@ -29,6 +29,7 @@ const {
   listMyEventsQuerySchema,
   eventIdParamsSchema,
   addOnRedeemParamsSchema,
+  initializeTicketUpgradeSchema,
   organizerIdParamsSchema,
   ticketIdParamsSchema,
   postIdParamsSchema,
@@ -96,6 +97,8 @@ const {
   listCheckInConflictsController,
   getCheckInRosterController,
   redeemAddOnController,
+  listTicketUpgradeOptionsController,
+  initializeTicketUpgradeController,
   getAddOnFulfilmentController,
   registerCheckInDeviceController,
   listCheckInDevicesController,
@@ -221,6 +224,19 @@ router.post(
   validateBody(refundTicketSchema),
   refundTicketController,
 );
+router.get(
+  "/tickets/:ticketId/upgrade-options",
+  validateParams(ticketIdParamsSchema),
+  listTicketUpgradeOptionsController,
+);
+
+router.post(
+  "/tickets/:ticketId/upgrade/initialize",
+  validateParams(ticketIdParamsSchema),
+  validateBody(initializeTicketUpgradeSchema),
+  initializeTicketUpgradeController,
+);
+
 router.post(
   "/tickets/:ticketId/resale",
   validateParams(ticketIdParamsSchema),

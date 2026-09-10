@@ -42,7 +42,11 @@ const {
   initializePaystackTransaction,
   verifyPaystackTransaction,
 } = require("./paystack.service");
-const { creditTicketSale, creditAddOnSale } = require("./wallet.service");
+const {
+  creditTicketSale,
+  creditAddOnSale,
+  creditTicketUpgrade,
+} = require("./wallet.service");
 const {
   finalizeWithdrawalSuccess,
   finalizeWithdrawalFailure,
@@ -3498,6 +3502,352 @@ const getEventAddOnFulfilment = async ({ eventId, actorUserId, redemption }) => 
   };
 };
 
+/**
+ * What a held ticket could move up to.
+ *
+ * Upgrades only: a cheaper tier would mean refunding a difference, which is a
+ * policy and a money path rather than a UI state. "What you already paid" is
+ * the base price on the ticket's own breakdown, not the tier's price today,
+ * so a later price change never silently re-bills the holder.
+ */
+const basePaidPerTicket = (ticket) => {
+  const breakdown = ticket?.paymentMetadata?.pricingBreakdown;
+
+  return Math.max(
+    0,
+    Math.round(
+      Number(breakdown?.unitBasePriceNaira ?? ticket?.unitPriceNaira ?? 0),
+    ),
+  );
+};
+
+const ensureTicketUpgradable = async ({ ticket, now = new Date() }) => {
+  if (ticket.status !== "paid") {
+    throw new ApiError(
+      409,
+      ticket.status === "used"
+        ? "This ticket has already been checked in"
+        : `A ticket with status "${ticket.status}" cannot be upgraded`,
+      null,
+      "TICKET_NOT_UPGRADABLE",
+    );
+  }
+
+  if (ticket.usedAt) {
+    throw new ApiError(
+      409,
+      "This ticket has already been checked in",
+      null,
+      "TICKET_NOT_UPGRADABLE",
+    );
+  }
+
+  if (ticket.resaleStatus && ticket.resaleStatus !== "none") {
+    throw new ApiError(
+      409,
+      "Take this ticket off the resale marketplace before upgrading it",
+      null,
+      "TICKET_NOT_UPGRADABLE",
+    );
+  }
+
+  const event =
+    ticket.eventId && typeof ticket.eventId === "object"
+      ? ticket.eventId
+      : await Event.findById(ticket.eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  const window = resolveEventSalesWindowState(event, now);
+
+  if (window.state !== "open") {
+    throw new ApiError(
+      409,
+      window.state === "started"
+        ? "Upgrades close once the event starts"
+        : "This event has ended",
+      null,
+      "TICKET_NOT_UPGRADABLE",
+    );
+  }
+
+  return event;
+};
+
+/** Every tier above what this holder paid, with its live availability. */
+const listTicketUpgradeOptions = async ({ ticketId, actorUserId }) => {
+  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  const now = new Date();
+  const event = await ensureTicketUpgradable({ ticket, now });
+
+  const paid = basePaidPerTicket(ticket);
+  const quantity = Math.max(1, Number(ticket.quantity || 1));
+  const feeConfig = {
+    platformFeePercent: Number(
+      event.platformFeePercent ?? DEFAULT_PLATFORM_FEE_PERCENT,
+    ),
+    feeMode: event.feeMode || "absorbed_by_organizer",
+  };
+
+  const options = await Promise.all(
+    (event.ticketCategories || []).map(async (category) => {
+      const difference = Number(category.priceNaira || 0) - paid;
+      const availability = resolveTicketCategoryAvailability(category, now);
+      const reserved = await countReservedTickets(event._id, category._id);
+      const released = Number(category.quantity || 0);
+      const isCurrent = String(category._id) === String(ticket.ticketCategoryId);
+
+      return {
+        _id: String(category._id),
+        name: category.name,
+        priceNaira: Number(category.priceNaira || 0),
+        isCurrent,
+        remaining: Math.max(0, released - reserved),
+        soldOut: reserved + quantity > released,
+        onSale: availability.onSale,
+        differenceNaira: difference > 0 ? difference * quantity : 0,
+        /* One flag the client can trust rather than re-deriving four rules. */
+        upgradable:
+          !isCurrent &&
+          difference > 0 &&
+          availability.onSale &&
+          reserved + quantity <= released,
+      };
+    }),
+  );
+
+  return {
+    ticketId: String(ticket._id),
+    quantity,
+    paidNaira: paid * quantity,
+    currentTierName: ticket.ticketCategoryName || "General admission",
+    feeMode: feeConfig.feeMode,
+    options,
+  };
+};
+
+const initializeTicketUpgrade = async ({ ticketId, actorUserId, payload }) => {
+  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  const now = new Date();
+  const event = await ensureTicketUpgradable({ ticket, now });
+
+  const target = (event.ticketCategories || []).find(
+    (category) => String(category._id) === String(payload.ticketCategoryId),
+  );
+
+  if (!target) {
+    throw new ApiError(400, "That ticket tier is not on this event");
+  }
+
+  if (String(target._id) === String(ticket.ticketCategoryId)) {
+    throw new ApiError(400, "This ticket is already on that tier");
+  }
+
+  const availability = resolveTicketCategoryAvailability(target, now);
+
+  if (!availability.onSale) {
+    throw new ApiError(409, availability.reason || "That tier is not on sale");
+  }
+
+  const quantity = Math.max(1, Number(ticket.quantity || 1));
+  const reserved = await countReservedTickets(event._id, target._id);
+
+  if (reserved + quantity > Number(target.quantity || 0)) {
+    throw new ApiError(
+      409,
+      `${target.name} is sold out`,
+      null,
+      "INSUFFICIENT_INVENTORY",
+    );
+  }
+
+  const perTicketDifference =
+    Number(target.priceNaira || 0) - basePaidPerTicket(ticket);
+
+  if (perTicketDifference <= 0) {
+    throw new ApiError(
+      400,
+      `${target.name} does not cost more than what you paid, so there is nothing to upgrade`,
+      null,
+      "NOT_AN_UPGRADE",
+    );
+  }
+
+  /* The difference is priced by the same rules a ticket is, so the organizer
+     is credited a net and Vera takes its cut on the delta only. */
+  const pricingBreakdown = computePrimaryTicketPricing({
+    baseUnitPriceNaira: perTicketDifference,
+    quantity,
+    platformFeePercent: Number(
+      event.platformFeePercent ?? DEFAULT_PLATFORM_FEE_PERCENT,
+    ),
+    feeMode: event.feeMode || "absorbed_by_organizer",
+  });
+
+  const pending = {
+    ticketCategoryId: String(target._id),
+    ticketCategoryName: target.name,
+    priceNaira: Number(target.priceNaira || 0),
+    differenceNaira: pricingBreakdown.totalCheckoutNaira,
+    pricingBreakdown,
+    startedAt: now,
+  };
+
+  const shouldBypassPaystack = !env.paystackSecretKey && env.paystackDevBypass;
+
+  if (!env.paystackSecretKey && !shouldBypassPaystack) {
+    throw new ApiError(
+      503,
+      "Paid checkout is not configured yet. Set PAYSTACK_SECRET_KEY.",
+    );
+  }
+
+  if (shouldBypassPaystack) {
+    ticket.paymentMetadata = {
+      ...(ticket.paymentMetadata || {}),
+      pendingUpgrade: pending,
+    };
+    await ticket.save();
+
+    const upgraded = await applyTicketUpgrade({ ticket, event });
+
+    return {
+      requiresPayment: false,
+      ticket: withClientTicketIdentity(upgraded),
+      payment: null,
+      paymentAttemptId: null,
+      kind: "ticket_upgrade",
+      pricingBreakdown,
+    };
+  }
+
+  const buyer = await User.findById(actorUserId).select("email");
+  const paymentAttempt = await createPaymentAttemptForCheckout({
+    kind: "ticket_upgrade",
+    buyerUserId: actorUserId,
+    eventId: event._id,
+    ticketId: ticket._id,
+    amountKobo: Math.round(pricingBreakdown.totalCheckoutNaira * 100),
+    callbackUrl: payload.callbackUrl,
+    email: String(buyer?.email || ticket.attendeeEmail || "").trim(),
+    metadata: {
+      ticketId: String(ticket._id),
+      upgradeTo: target.name,
+    },
+    referenceSuffix: "upg",
+  });
+
+  /* The intent lives on the ticket rather than the attempt: it is what
+     finalize reads back, and it survives a webhook arriving first. */
+  ticket.paymentMetadata = {
+    ...(ticket.paymentMetadata || {}),
+    pendingUpgrade: { ...pending, paymentAttemptId: String(paymentAttempt._id) },
+  };
+  await ticket.save();
+
+  return {
+    requiresPayment: true,
+    ticket: withClientTicketIdentity(ticket),
+    payment: {
+      authorizationUrl: paymentAttempt.authorizationUrl,
+      accessCode: paymentAttempt.accessCode,
+      reference: paymentAttempt.reference,
+    },
+    paymentAttemptId: String(paymentAttempt._id),
+    kind: "ticket_upgrade",
+    pricingBreakdown,
+  };
+};
+
+/**
+ * Moves the ticket up. The code is reissued and the old one dies, exactly as
+ * a resale does: anyone holding a screenshot of the previous QR must not get
+ * in on it.
+ */
+const applyTicketUpgrade = async ({ ticket, event, paymentReference = "" }) => {
+  const pending = ticket.paymentMetadata?.pendingUpgrade;
+
+  if (!pending) {
+    return ticket;
+  }
+
+  const resolvedEvent = event || (await Event.findById(ticket.eventId));
+  const quantity = Math.max(1, Number(ticket.quantity || 1));
+  const nextCode = await buildTicketCode();
+
+  /* Re-checked here because the tier can sell out between starting the
+     payment and it clearing. The upgrade still goes through: the holder has
+     paid and the alternative is taking money for nothing. It is flagged so
+     an organizer can see they are one over on that tier. */
+  const reserved = await countReservedTickets(
+    resolvedEvent._id,
+    pending.ticketCategoryId,
+  );
+  const target = (resolvedEvent.ticketCategories || []).find(
+    (category) => String(category._id) === String(pending.ticketCategoryId),
+  );
+  const overshoot = reserved + quantity > Number(target?.quantity || 0);
+
+  ticket.ticketCategoryId = pending.ticketCategoryId;
+  ticket.ticketCategoryName = pending.ticketCategoryName;
+  ticket.unitPriceNaira = pending.priceNaira;
+  ticket.totalPriceNaira = pending.priceNaira * quantity;
+  ticket.ticketCode = nextCode;
+  ticket.barcodeValue = buildTicketBarcodeValue({
+    ticketCode: nextCode,
+    eventId: resolvedEvent._id,
+    ticketCategoryId: pending.ticketCategoryId,
+  });
+
+  const { pendingUpgrade: _done, ...restMetadata } = ticket.paymentMetadata || {};
+
+  ticket.paymentMetadata = {
+    ...restMetadata,
+    upgrades: [
+      ...(restMetadata.upgrades || []),
+      {
+        toTicketCategoryId: pending.ticketCategoryId,
+        toTicketCategoryName: pending.ticketCategoryName,
+        differenceNaira: pending.differenceNaira,
+        pricingBreakdown: pending.pricingBreakdown,
+        paymentReference: paymentReference || ticket.paymentReference || "",
+        overshoot,
+        at: new Date(),
+      },
+    ],
+  };
+
+  await ticket.save();
+
+  if (env.walletCreditingEnabled) {
+    await withMongoTransaction(async (session) => {
+      await creditTicketUpgrade({
+        ticket,
+        pricingBreakdown: pending.pricingBreakdown,
+        event: resolvedEvent,
+        session,
+      });
+    });
+  }
+
+  void createNotification({
+    userId: toIdString(ticket.buyerUserId),
+    type: "ticket.upgraded",
+    title: `You are on ${pending.ticketCategoryName}`,
+    message: "Your ticket was upgraded and carries a new code. The old one no longer works.",
+    data: {
+      target: "ticket-details",
+      ticketId: String(ticket._id),
+      eventId: toIdString(ticket.eventId),
+    },
+    push: true,
+  }).catch(() => null);
+
+  return ticket;
+};
+
 const updateEvent = async ({
   eventId,
   actorUserId,
@@ -5479,20 +5829,24 @@ const listMyTickets = async ({
     };
   });
 
-  /* One aggregate for the page, so a ticket row can say "+2 extras" without
-     the reader having to open it to find out. */
-  const addOnSummary = await addOnService.summariseByTicket(
+  /* One query for the page. The rows travel with the ticket because a ticket
+     screen has to name what was bought and where to collect it; the roll-up
+     is derived from the same fetch for compact rows. */
+  const addOnsByTicket = await addOnService.listByTickets(
     normalizedItems.map((ticket) => ticket._id),
   );
 
   return {
-    items: normalizedItems.map((ticket) =>
-      withClientTicketIdentity(
+    items: normalizedItems.map((ticket) => {
+      const addOns = addOnsByTicket.get(String(ticket._id)) || [];
+
+      return withClientTicketIdentity(
         Object.assign(ticket, {
-          addOnSummary: addOnSummary.get(String(ticket._id)) || null,
+          addOns,
+          addOnSummary: addOns.length ? addOnService.summariseRows(addOns) : null,
         }),
-      ),
-    ),
+      );
+    }),
     ...buildPaginationMeta({
       page: pageNumber,
       limit: limitNumber,
@@ -5647,8 +6001,26 @@ const getTicketById = async ({ ticketId, actorUserId }) => {
   /* The holder's screen and a door both open on "what else is on this
      ticket", so the add-ons travel with it rather than needing a second call. */
   const addOns = await addOnService.listTicketAddOns({ ticketId: ticket._id });
+  const plain = ticket.toObject ? ticket.toObject() : ticket;
 
-  return Object.assign(ticket.toObject ? ticket.toObject() : ticket, {
+  /* `nextOccurrenceAt` is derived, never stored, so a populated event arrives
+     without it and every screen reading it falls back to "date to be
+     announced". The list endpoint already does this; the detail did not. */
+  if (plain.eventId && typeof plain.eventId === "object" && plain.eventId.startsAt) {
+    const now = new Date();
+    const occurrence = resolveOccurrenceWindow(plain.eventId, now) || {
+      startsAt: new Date(plain.eventId.startsAt),
+      endsAt: new Date(plain.eventId.endsAt),
+    };
+
+    plain.eventId = {
+      ...plain.eventId,
+      nextOccurrenceAt: occurrence.startsAt,
+      nextOccurrenceEndsAt: occurrence.endsAt,
+    };
+  }
+
+  return Object.assign(plain, {
     addOns: addOns.map((row) => row.toObject()),
   });
 };
@@ -6868,6 +7240,39 @@ const processPaystackWebhookEvent = async (payload) => {
         reference: paymentReference,
         paymentAttemptId: String(paymentAttempt._id),
         ticketId: String(ticket._id),
+      };
+    }
+
+    if (paymentAttempt.kind === "ticket_upgrade") {
+      const ticket = paymentAttempt.ticketId
+        ? await EventTicket.findById(paymentAttempt.ticketId)
+        : null;
+
+      if (!ticket) {
+        return {
+          ignored: true,
+          event: eventName,
+          reference: paymentReference,
+          reason: "ticket_not_found",
+        };
+      }
+
+      ticket.paymentReference = paymentReference;
+      const upgraded = await applyTicketUpgrade({ ticket, paymentReference });
+
+      await markPaymentAttemptVerified({
+        paymentAttempt,
+        paymentData,
+        fulfillmentTicketId: upgraded._id,
+      });
+
+      return {
+        processed: true,
+        event: eventName,
+        kind: "ticket_upgrade",
+        reference: paymentReference,
+        paymentAttemptId: String(paymentAttempt._id),
+        ticketId: String(upgraded._id),
       };
     }
 
@@ -8187,6 +8592,8 @@ module.exports = {
   batchCheckInTickets,
   listCheckInConflicts,
   getCheckInRoster,
+  listTicketUpgradeOptions,
+  initializeTicketUpgrade,
   redeemTicketAddOn,
   getEventAddOnFulfilment,
   registerCheckInDevice,

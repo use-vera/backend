@@ -10,6 +10,7 @@ const listWalletTransactionsQuerySchema = z.object({
       "all",
       "ticket_sale",
       "add_on_sale",
+      "ticket_upgrade",
       "platform_fee",
       "refund",
       "chargeback",

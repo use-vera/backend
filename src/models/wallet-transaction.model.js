@@ -30,6 +30,8 @@ const walletTransactionSchema = new Schema(
         // Distinct from ticket_sale on purpose: refunds look a ticket's sale
         // row up by ticketId, and add-ons share their ticket's id.
         "add_on_sale",
+        // The difference paid to move a ticket up a tier.
+        "ticket_upgrade",
         "platform_fee",
         "refund",
         "chargeback",

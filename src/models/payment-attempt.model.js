@@ -20,6 +20,7 @@ const paymentAttemptSchema = new Schema(
       enum: [
         "ticket_purchase",
         "ticket_resale_purchase",
+        "ticket_upgrade",
         "premium_subscription",
         "event_feature",
       ],

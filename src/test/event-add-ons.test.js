@@ -490,3 +490,44 @@ test("the checkout route charges for the basket, not just the ticket", async () 
   expect(held[0].quantity).toBe(2);
   expect(held[0].name).toBe("Parking");
 });
+
+/* The web ticket screen reads the LIST endpoint, not the detail one, so a
+   count-only roll-up left it with nothing to render. Both shapes travel. */
+test("the tickets list carries the add-on rows, not just a count", async () => {
+  const request = require("supertest");
+  const app = require("../app");
+  const { signAccessToken } = require("../utils/jwt");
+
+  const organizer = await createUser();
+  const buyer = await createUser();
+  const dinner = addOn({
+    name: "Dinner",
+    priceNaira: 20000,
+    redemption: "desk",
+    location: "Dining tent",
+  });
+  const event = await sellingEvent(organizer._id, [dinner]);
+
+  await buy({
+    event,
+    buyer,
+    addOns: [{ addOnId: String(dinner._id), quantity: 1 }],
+  });
+
+  const response = await request(app)
+    .get("/api/events/tickets/me")
+    .set("Authorization", `Bearer ${signAccessToken({ userId: String(buyer._id) })}`);
+
+  expect(response.status).toBe(200);
+
+  const [row] = response.body.data.items;
+
+  // The rows themselves, so a screen can say what and where.
+  expect(row.addOns).toHaveLength(1);
+  expect(row.addOns[0].name).toBe("Dinner");
+  expect(row.addOns[0].location).toBe("Dining tent");
+  expect(row.addOns[0].redemption).toBe("desk");
+
+  // And the roll-up a compact card uses, from the same fetch.
+  expect(row.addOnSummary).toEqual({ count: 1, quantity: 1, outstanding: 1 });
+});
