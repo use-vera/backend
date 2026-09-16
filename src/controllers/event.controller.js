@@ -1,4 +1,5 @@
 const asyncHandler = require("../utils/async-handler");
+const { geocodeSearch } = require("../services/geocode.service");
 const { refundTicket } = require("../services/refund.service");
 const {
   createEvent,
@@ -205,6 +206,19 @@ const searchEventCentersController = asyncHandler(async (req, res) => {
     success: true,
     message: "Event centers fetched",
     data: result,
+  });
+});
+
+const geocodeSearchController = asyncHandler(async (req, res) => {
+  const items = await geocodeSearch({
+    query: req.query.query,
+    countryCodes: req.query.countryCodes,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Places fetched",
+    data: { items },
   });
 });
 
@@ -1011,6 +1025,7 @@ module.exports = {
   initializeEventFeatureController,
   verifyEventFeatureController,
   searchEventCentersController,
+  geocodeSearchController,
   listMyEventsController,
   getEventController,
   getOrganizerProfileController,

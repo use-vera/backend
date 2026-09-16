@@ -26,6 +26,7 @@ const {
   initializeEventFeatureSchema,
   verifyEventFeatureSchema,
   searchEventCentersQuerySchema,
+  geocodeSearchQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
   addOnRedeemParamsSchema,
@@ -81,6 +82,7 @@ const {
   initializeEventFeatureController,
   verifyEventFeatureController,
   searchEventCentersController,
+  geocodeSearchController,
   listMyEventsController,
   getEventController,
   getOrganizerProfileController,
@@ -173,6 +175,11 @@ router.get(
   "/centers/search",
   validateQuery(searchEventCentersQuerySchema),
   searchEventCentersController,
+);
+router.get(
+  "/geocode/search",
+  validateQuery(geocodeSearchQuerySchema),
+  geocodeSearchController,
 );
 router.get(
   "/organizers/:organizerId",

@@ -539,6 +539,15 @@ const searchEventCentersQuerySchema = z.object({
   longitude: z.coerce.number().min(-180).max(180).optional(),
 });
 
+const geocodeSearchQuerySchema = z.object({
+  query: z.string().trim().min(3).max(160),
+  countryCodes: z
+    .string()
+    .trim()
+    .regex(/^[a-z]{2}(,[a-z]{2})*$/i)
+    .optional(),
+});
+
 const listMyEventsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(100000).optional().default(1),
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
@@ -813,6 +822,7 @@ module.exports = {
   initializeEventFeatureSchema,
   verifyEventFeatureSchema,
   searchEventCentersQuerySchema,
+  geocodeSearchQuerySchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
   addOnRedeemParamsSchema,
