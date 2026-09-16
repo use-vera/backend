@@ -128,14 +128,32 @@ const listFollowers = async ({ userId, page, limit }) => {
   };
 };
 
-const listFollowing = async ({ userId, page, limit }) => {
+const listFollowing = async ({ userId, page, limit, search }) => {
   const { pageNumber, limitNumber, skip } = normalizePagination({
     page,
     limit,
   });
 
+  /* Searching has to happen here rather than on the loaded page: the names
+     being searched belong to the followed user, not to the follow edge, and
+     a client filtering one page can only ever find what that page holds. */
+  const term = String(search || "").trim();
+  const filter = { followerUserId: userId };
+
+  if (term) {
+    const pattern = new RegExp(
+      term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "i",
+    );
+    const matches = await User.find({
+      $or: [{ fullName: pattern }, { title: pattern }, { email: pattern }],
+    }).select("_id");
+
+    filter.followingUserId = { $in: matches.map((match) => match._id) };
+  }
+
   const [rows, totalItems] = await Promise.all([
-    Follow.find({ followerUserId: userId })
+    Follow.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNumber)
@@ -143,7 +161,7 @@ const listFollowing = async ({ userId, page, limit }) => {
         "followingUserId",
         "fullName avatarUrl title verificationBadge",
       ),
-    Follow.countDocuments({ followerUserId: userId }),
+    Follow.countDocuments(filter),
   ]);
 
   return {

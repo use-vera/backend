@@ -9,6 +9,12 @@ const CheckInDevice = require("../models/check-in-device.model");
 const EventRating = require("../models/event-rating.model");
 const EventCenter = require("../models/event-center.model");
 const EventChatMessage = require("../models/event-chat-message.model");
+const {
+  mentionsEveryone,
+  listEventAudience,
+  listMentionableUsers,
+  resolveDirectMentions,
+} = require("./mention.service");
 const EventPost = require("../models/event-post.model");
 const EventPostLike = require("../models/event-post-like.model");
 const EventPostComment = require("../models/event-post-comment.model");
@@ -3511,6 +3517,16 @@ const getEventAddOnFulfilment = async ({ eventId, actorUserId, redemption }) => 
  * so a later price change never silently re-bills the holder.
  */
 const basePaidPerTicket = (ticket) => {
+  /* An upgraded ticket keeps its original purchase breakdown, which records
+     the tier it was bought on. Reading that after an upgrade prices every
+     later move against a tier this holder has already left and paid to leave,
+     so they get offered their own old tier and are billed the difference
+     twice. The upgrade writes the tier they are now on onto the ticket
+     itself, and that snapshot is what they are actually holding. */
+  if (ticket?.paymentMetadata?.upgrades?.length) {
+    return Math.max(0, Math.round(Number(ticket.unitPriceNaira ?? 0)));
+  }
+
   const breakdown = ticket?.paymentMetadata?.pricingBreakdown;
 
   return Math.max(
@@ -3591,8 +3607,19 @@ const listTicketUpgradeOptions = async ({ ticketId, actorUserId }) => {
     feeMode: event.feeMode || "absorbed_by_organizer",
   };
 
+  /* A tier priced at or below what this holder paid can never become an
+     upgrade: unlike a sold-out or not-yet-open tier, no amount of waiting
+     changes that, so listing it only invites the question of why it cannot
+     be picked. Their own tier stays, because "you have this" is the answer
+     to where they currently sit. */
+  const offerable = (event.ticketCategories || []).filter(
+    (category) =>
+      String(category._id) === String(ticket.ticketCategoryId) ||
+      Number(category.priceNaira || 0) > paid,
+  );
+
   const options = await Promise.all(
-    (event.ticketCategories || []).map(async (category) => {
+    offerable.map(async (category) => {
       const difference = Number(category.priceNaira || 0) - paid;
       const availability = resolveTicketCategoryAvailability(category, now);
       const reserved = await countReservedTickets(event._id, category._id);
@@ -7958,6 +7985,77 @@ const listEventChatMessages = async ({
   };
 };
 
+/**
+ * Sends the mention notifications for one chat message.
+ *
+ * Returns who was notified so the organizer's routine "new chat" ping can
+ * skip anyone already told, rather than arriving as a second buzz about the
+ * same sentence.
+ */
+const notifyEventChatMentions = async ({
+  event,
+  actorUserId,
+  senderName,
+  message,
+  mentionedUsers,
+  broadcast,
+}) => {
+  /* Already resolved by the caller, which had to do it anyway to store them
+     on the message. Resolving twice would mean two round trips for one send. */
+  const recipients = broadcast
+    ? await listEventAudience({ event, excludeUserId: actorUserId })
+    : (mentionedUsers || []).map((entry) => entry.userId);
+
+  if (!recipients.length) {
+    return new Set();
+  }
+
+  const preview = String(message || "").slice(0, 120);
+
+  for (const userId of recipients) {
+    void createNotification({
+      userId,
+      type: "event.chat.mention",
+      title: broadcast
+        ? `${senderName} alerted everyone in ${event.name}`
+        : `${senderName} mentioned you in ${event.name}`,
+      message: preview,
+      data: {
+        target: "event-chat",
+        eventId: String(event._id),
+        broadcast,
+      },
+      push: true,
+    }).catch(() => null);
+  }
+
+  return new Set(recipients);
+};
+
+/** Who the composer's "@" picker may offer, and whether @chat is on the list. */
+const listEventChatMentionTargets = async ({
+  eventId,
+  actorUserId,
+  search,
+  limit,
+}) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeViewedBy(event, actorUserId);
+  await ensureEventParticipant({ event, actorUserId });
+
+  const [users, canMentionEveryone] = await Promise.all([
+    listMentionableUsers({ event, actorUserId, search, limit }),
+    canUserManageEvent(event, actorUserId),
+  ]);
+
+  return { items: users, canMentionEveryone };
+};
+
 const createEventChatMessage = async ({ eventId, actorUserId, payload }) => {
   const event = await Event.findById(eventId).populate(
     "organizerUserId",
@@ -7977,26 +8075,65 @@ const createEventChatMessage = async ({ eventId, actorUserId, payload }) => {
     payload,
   });
 
+  /* Checked before the message is written, so a refused broadcast does not
+     leave the text posted with the ping quietly stripped out of it. */
+  const broadcast = mentionsEveryone(messageInput.message);
+
+  if (broadcast && !(await canUserManageEvent(event, actorUserId))) {
+    throw new ApiError(
+      403,
+      "Only the organizer and event staff can use @chat to alert everyone",
+      null,
+      "MENTION_NOT_ALLOWED",
+    );
+  }
+
+  const mentionedUsers = broadcast
+    ? []
+    : await resolveDirectMentions({
+        event,
+        candidateUserIds: payload?.mentionedUserIds,
+        actorUserId,
+      });
+
   const message = await EventChatMessage.create({
     eventId: event._id,
     userId: actorUserId,
     message: messageInput.message,
     messageType: messageInput.messageType,
     metadata: messageInput.metadata,
+    mentions: { everyone: broadcast, users: mentionedUsers },
     replyToMessageId: messageInput.replyToMessageId,
     forwardedFromMessageId: messageInput.forwardedFromMessageId,
   });
 
   const hydratedMessage = await hydrateEventChatMessageById(message._id);
+  const senderName = hydratedMessage.userId?.fullName || "Someone";
+
+  /* Mentions go out before the organizer's own ping, and the organizer is
+     removed from the plain ping if they were already mentioned, so nobody
+     gets two notifications for one message. */
+  const notified = await notifyEventChatMentions({
+    event,
+    actorUserId,
+    senderName,
+    message: messageInput.message,
+    mentionedUsers,
+    broadcast,
+  });
 
   const organizerUserId = toIdString(event.organizerUserId);
 
-  if (organizerUserId && organizerUserId !== String(actorUserId)) {
+  if (
+    organizerUserId &&
+    organizerUserId !== String(actorUserId) &&
+    !notified.has(organizerUserId)
+  ) {
     void createNotification({
       userId: organizerUserId,
       type: "event.chat.message",
       title: `New chat in ${event.name}`,
-      message: `${hydratedMessage.userId?.fullName || "Attendee"} sent a message.`,
+      message: `${senderName} sent a message.`,
       data: {
         target: "event-chat",
         eventId: String(event._id),
@@ -8592,6 +8729,7 @@ module.exports = {
   batchCheckInTickets,
   listCheckInConflicts,
   getCheckInRoster,
+  listEventChatMentionTargets,
   listTicketUpgradeOptions,
   initializeTicketUpgrade,
   redeemTicketAddOn,

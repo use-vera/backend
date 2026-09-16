@@ -52,6 +52,7 @@ const {
   upsertEventReminder,
   listEventChatMessages,
   createEventChatMessage,
+  listEventChatMentionTargets,
   updateEventChatMessage,
   deleteEventChatMessage,
   listEventPosts,
@@ -316,6 +317,21 @@ const listEventChatController = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: "Event chat fetched",
+    data: result,
+  });
+});
+
+const listEventChatMentionTargetsController = asyncHandler(async (req, res) => {
+  const result = await listEventChatMentionTargets({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+    search: req.query.search,
+    limit: req.query.limit,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Mention targets fetched",
     data: result,
   });
 });
@@ -1004,6 +1020,7 @@ module.exports = {
   updateEventReminderController,
   listEventChatController,
   createEventChatMessageController,
+  listEventChatMentionTargetsController,
   updateEventChatMessageController,
   deleteEventChatMessageController,
   listEventPostsController,

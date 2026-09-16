@@ -49,6 +49,7 @@ const {
   rateEventSchema,
   listEventFeedQuerySchema,
   eventReminderSchema,
+  eventChatMentionQuerySchema,
   eventChatMessageBodySchema,
   eventChatMessageParamsSchema,
   updateEventChatMessageBodySchema,
@@ -127,6 +128,7 @@ const {
   updateEventReminderController,
   listEventChatController,
   createEventChatMessageController,
+  listEventChatMentionTargetsController,
   updateEventChatMessageController,
   deleteEventChatMessageController,
   listEventPostsController,
@@ -448,6 +450,12 @@ router.get(
   validateParams(eventIdParamsSchema),
   validateQuery(eventChatQuerySchema),
   listEventChatController,
+);
+router.get(
+  "/:eventId/chat/mentions",
+  validateParams(eventIdParamsSchema),
+  validateQuery(eventChatMentionQuerySchema),
+  listEventChatMentionTargetsController,
 );
 router.post(
   "/:eventId/chat",

@@ -31,6 +31,24 @@ const eventChatMessageSchema = new Schema(
       type: Schema.Types.Mixed,
       default: {},
     },
+    /* Stored rather than re-parsed. A display name can contain spaces, so
+       "@Adaeze Okonkwo" cannot be told apart from an "@" followed by two
+       ordinary words once the text is all that is left. The names are the
+       server's, not the sender's, so a message cannot claim a mention it
+       does not have in order to style arbitrary text. */
+    mentions: {
+      everyone: { type: Boolean, default: false },
+      users: {
+        type: [
+          {
+            _id: false,
+            userId: { type: Schema.Types.ObjectId, ref: "User" },
+            name: { type: String, trim: true, maxlength: 120 },
+          },
+        ],
+        default: [],
+      },
+    },
     replyToMessageId: {
       type: Schema.Types.ObjectId,
       ref: "EventChatMessage",

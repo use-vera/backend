@@ -684,6 +684,9 @@ const eventChatMessageBodySchema = z
     metadata: z.record(z.string(), z.any()).optional(),
     replyToMessageId: objectIdSchema.optional(),
     forwardedFromMessageId: objectIdSchema.optional(),
+    /* Zod strips what it does not declare, so an undeclared field here is a
+       basket of mentions silently dropped between composer and server. */
+    mentionedUserIds: z.array(objectIdSchema).max(50).optional(),
   })
   .superRefine((value, ctx) => {
     const hasMessage = Boolean(String(value.message || "").trim());
@@ -697,6 +700,11 @@ const eventChatMessageBodySchema = z
       });
     }
   });
+
+const eventChatMentionQuerySchema = z.object({
+  search: z.string().trim().max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+});
 
 const eventChatMessageParamsSchema = z.object({
   eventId: objectIdSchema,
@@ -829,6 +837,7 @@ module.exports = {
   rateEventSchema,
   listEventFeedQuerySchema,
   eventReminderSchema,
+  eventChatMentionQuerySchema,
   eventChatMessageBodySchema,
   eventChatMessageParamsSchema,
   updateEventChatMessageBodySchema,

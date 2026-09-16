@@ -65,6 +65,7 @@ const listFollowingController = asyncHandler(async (req, res) => {
     userId: req.params.userId,
     page: req.query.page,
     limit: req.query.limit,
+    search: req.query.search,
   });
 
   res.status(200).json({

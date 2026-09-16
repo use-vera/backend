@@ -86,6 +86,10 @@ const ensureDirectConversationAccess = async ({ conversationId, userId }) => {
   return conversation;
 };
 
+const {
+  buildEventChatSendPayload,
+} = require("./chat-payload");
+
 const normalizeText = (value) => String(value || "").trim();
 
 const initializeSocketServer = ({ httpServer }) => {
@@ -173,13 +177,7 @@ const initializeSocketServer = ({ httpServer }) => {
         const created = await createEventChatMessage({
           eventId,
           actorUserId: userId,
-          payload: {
-            message,
-            messageType: payload?.messageType,
-            metadata: payload?.metadata,
-            replyToMessageId: payload?.replyToMessageId,
-            forwardedFromMessageId: payload?.forwardedFromMessageId,
-          },
+          payload: buildEventChatSendPayload({ ...payload, message }),
         });
 
         io.to(`event:${eventId}`).emit("event:message:new", {

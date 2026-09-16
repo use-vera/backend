@@ -83,7 +83,8 @@ test("a cheaper tier is not offered and is refused outright", async () => {
     ticketId: order.ticket._id,
     actorUserId: buyer._id,
   });
-  expect(options.options.find((o) => o.name === "Balcony").upgradable).toBe(false);
+  // Not listed at all: no wait makes a cheaper tier into an upgrade.
+  expect(options.options.find((o) => o.name === "Balcony")).toBeUndefined();
 
   await expect(
     initializeTicketUpgrade({
@@ -274,4 +275,71 @@ test("a ticket carries its event's next occurrence, not a bare document", async 
   expect(detail.eventId.nextOccurrenceAt).toBeInstanceOf(Date);
   expect(Number.isNaN(detail.eventId.nextOccurrenceAt.getTime())).toBe(false);
   expect(detail.eventId.nextOccurrenceEndsAt).toBeInstanceOf(Date);
+});
+
+/* The second upgrade is where "what you already paid" goes stale: the
+   original purchase breakdown survives on the ticket, so a holder who has
+   moved up once is still priced against the tier they left. */
+test("a second upgrade is priced against the tier you are on now", async () => {
+  const organizer = await createUser();
+  const buyer = await createUser();
+  const general = tier("General admission", 4000, 50);
+  const teaser = tier("Teaser", 10000, 20);
+  const vip = tier("VIP", 25000, 10);
+  const event = await sellingEvent(organizer._id, [general, teaser, vip]);
+
+  const order = await buy({ event, buyer, tier: general });
+
+  await initializeTicketUpgrade({
+    ticketId: order.ticket._id,
+    actorUserId: buyer._id,
+    payload: { ticketCategoryId: String(teaser._id) },
+  });
+
+  const options = await listTicketUpgradeOptions({
+    ticketId: order.ticket._id,
+    actorUserId: buyer._id,
+  });
+
+  // The summary must read what this holder has actually put in.
+  expect(options.paidNaira).toBe(10000);
+
+  const teaserOption = options.options.find((o) => o.name === "Teaser");
+  expect(teaserOption.isCurrent).toBe(true);
+
+  // The tier left behind is cheaper than the one held, so it is not an
+  // upgrade and must not be listed as one.
+  expect(
+    options.options.find((o) => o.name === "General admission"),
+  ).toBeUndefined();
+
+  // And the real next step is priced off the Teaser price, not the old one.
+  const vipOption = options.options.find((o) => o.name === "VIP");
+  expect(vipOption.upgradable).toBe(true);
+  expect(vipOption.differenceNaira).toBe(15000);
+
+  /* The money path, not just the label: pricing the second upgrade against
+     the tier already left would re-charge the 6000 this holder has paid. */
+  const second = await initializeTicketUpgrade({
+    ticketId: order.ticket._id,
+    actorUserId: buyer._id,
+    payload: { ticketCategoryId: String(vip._id) },
+  });
+
+  expect(second.pricingBreakdown.totalCheckoutNaira).toBe(15000);
+
+  const after = await EventTicket.findById(order.ticket._id);
+  expect(after.ticketCategoryName).toBe("VIP");
+  expect(after.unitPriceNaira).toBe(25000);
+  expect(after.paymentMetadata.upgrades).toHaveLength(2);
+
+  /* Across both hops the holder has put in exactly the VIP price and no
+     more: 4000 to get in, then 6000, then 15000. */
+  const paidAcrossHops =
+    4000 +
+    after.paymentMetadata.upgrades.reduce(
+      (sum, hop) => sum + Number(hop.pricingBreakdown.totalCheckoutNaira || 0),
+      0,
+    );
+  expect(paidAcrossHops).toBe(25000);
 });

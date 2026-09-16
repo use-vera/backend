@@ -1158,6 +1158,59 @@ const listChatThreads = async ({
   };
 };
 
+/* Capped so one very busy account cannot turn a Discover page into a scan of
+   every ticket Vera has ever issued. */
+const SHARED_ATTENDEE_SCAN_LIMIT = 4000;
+
+/**
+ * Everyone who was checked in to an event this user was also checked in to.
+ *
+ * Attendance, not intent: both sides must have been scanned at the door. A
+ * ticket that was only bought says someone meant to come, and turning that
+ * into "you two have met" would out people from events they skipped.
+ */
+const findSharedEventAttendees = async (actorUserId) => {
+  const mine = await EventTicket.find({
+    buyerUserId: actorUserId,
+    usedAt: { $ne: null },
+  })
+    .select("eventId")
+    .limit(500)
+    .lean();
+
+  const eventIds = [...new Set(mine.map((row) => String(row.eventId)))];
+
+  if (!eventIds.length) {
+    return new Map();
+  }
+
+  const others = await EventTicket.find({
+    eventId: { $in: eventIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    usedAt: { $ne: null },
+    buyerUserId: { $ne: actorUserId },
+  })
+    .select("buyerUserId eventId")
+    .populate("eventId", "name")
+    .limit(SHARED_ATTENDEE_SCAN_LIMIT)
+    .lean();
+
+  const byUser = new Map();
+
+  for (const row of others) {
+    const key = String(row.buyerUserId);
+    const name = row.eventId?.name || "an event";
+    const entry = byUser.get(key) || { eventNames: [] };
+
+    if (!entry.eventNames.includes(name)) {
+      entry.eventNames.push(name);
+    }
+
+    byUser.set(key, entry);
+  }
+
+  return byUser;
+};
+
 const discoverChatUsers = async ({
   actorUserId,
   page = 1,
@@ -1205,21 +1258,56 @@ const discoverChatUsers = async ({
       .filter((value) => value !== String(actorUserId)),
   );
 
+  const shared = await findSharedEventAttendees(actorUserId);
+  const sharedIds = [...shared.keys()].map(
+    (id) => new mongoose.Types.ObjectId(id),
+  );
+
+  /* Ranked rather than filtered. Someone you stood in the same room as is
+     the person worth surfacing first, but a new account has been to nothing
+     yet, and a Discover tab that is empty for them is no use at all. */
+  /* find() casts an id string to an ObjectId for you; aggregate() does not,
+     and an uncast $ne silently matches everyone, including the viewer. */
+  const aggregateMatch = {
+    ...query,
+    _id: { $ne: new mongoose.Types.ObjectId(String(actorUserId)) },
+  };
+
   const [items, totalItems] = await Promise.all([
-    User.find(query)
-      .select("fullName email avatarUrl title verificationBadge")
-      .sort({ updatedAt: -1, createdAt: -1 })
-      .skip(skip)
-      .limit(limitNumber)
-      .lean(),
+    User.aggregate([
+      { $match: aggregateMatch },
+      {
+        $addFields: {
+          sharedRank: { $cond: [{ $in: ["$_id", sharedIds] }, 0, 1] },
+        },
+      },
+      { $sort: { sharedRank: 1, updatedAt: -1, createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limitNumber },
+      {
+        $project: {
+          fullName: 1,
+          email: 1,
+          avatarUrl: 1,
+          title: 1,
+          verificationBadge: 1,
+        },
+      },
+    ]),
     User.countDocuments(query),
   ]);
 
   return {
-    items: items.map((item) => ({
-      ...item,
-      isCoworker: coworkerSet.has(String(item._id)),
-    })),
+    items: items.map((item) => {
+      const met = shared.get(String(item._id));
+
+      return {
+        ...item,
+        isCoworker: coworkerSet.has(String(item._id)),
+        sharedEventCount: met ? met.eventNames.length : 0,
+        sharedEventName: met ? met.eventNames[0] : "",
+      };
+    }),
     ...buildPaginationMeta({
       page: pageNumber,
       limit: limitNumber,
