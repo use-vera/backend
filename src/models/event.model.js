@@ -268,6 +268,76 @@ const addOnSchema = new Schema(
   { _id: true },
 );
 
+/**
+ * Money off, for people the organizer chooses to give it to.
+ *
+ * The discount always comes out of the organizer's side: Vera's percentage
+ * is still worked out on the full price, so a code never costs Vera
+ * anything. `appliesTo` is the field that does the real work — it is what
+ * separates a code that cuts the ticket from one that covers parking.
+ */
+const promoCodeSchema = new Schema(
+  {
+    // The organizer's own label. Never shown to a buyer.
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      minlength: 1,
+      maxlength: 60,
+    },
+    // What a buyer types. Stored uppercase so matching never depends on
+    // how someone typed it.
+    code: {
+      type: String,
+      required: true,
+      trim: true,
+      uppercase: true,
+      minlength: 3,
+      maxlength: 24,
+    },
+    discountType: {
+      type: String,
+      enum: ["percent", "fixed"],
+      default: "percent",
+    },
+    // A percentage (1-100) or an amount in naira, depending on the type.
+    discountValue: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+    appliesTo: {
+      type: String,
+      enum: ["ticket", "addons"],
+      default: "ticket",
+    },
+    // Total uses across everyone. Zero means no ceiling.
+    maxUses: {
+      type: Number,
+      min: 0,
+      max: 200000,
+      default: 0,
+    },
+    perUserLimit: {
+      type: Number,
+      min: 1,
+      max: 20,
+      default: 1,
+    },
+    // When the code stops working. Null means it runs until the event does.
+    endsAt: {
+      type: Date,
+      default: null,
+    },
+    active: {
+      type: Boolean,
+      default: true,
+    },
+  },
+  { _id: true },
+);
+
 const ticketCategorySchema = new Schema(
   {
     name: {
@@ -463,6 +533,10 @@ const eventSchema = new Schema(
     },
     addOns: {
       type: [addOnSchema],
+      default: [],
+    },
+    promoCodes: {
+      type: [promoCodeSchema],
       default: [],
     },
     recurrence: {

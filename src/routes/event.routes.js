@@ -27,6 +27,7 @@ const {
   verifyEventFeatureSchema,
   searchEventCentersQuerySchema,
   geocodeSearchQuerySchema,
+  previewPromoCodeSchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
   addOnRedeemParamsSchema,
@@ -103,6 +104,8 @@ const {
   listTicketUpgradeOptionsController,
   initializeTicketUpgradeController,
   getAddOnFulfilmentController,
+  listPromoCodesController,
+  previewPromoCodeController,
   registerCheckInDeviceController,
   listCheckInDevicesController,
   revokeCheckInDeviceController,
@@ -385,6 +388,19 @@ router.post(
   "/:eventId/add-ons/:purchaseId/redeem",
   validateParams(addOnRedeemParamsSchema),
   redeemAddOnController,
+);
+
+router.get(
+  "/:eventId/promo-codes",
+  validateParams(eventIdParamsSchema),
+  listPromoCodesController,
+);
+
+router.post(
+  "/:eventId/promo-codes/preview",
+  validateParams(eventIdParamsSchema),
+  validateBody(previewPromoCodeSchema),
+  previewPromoCodeController,
 );
 
 router.get(

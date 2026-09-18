@@ -127,6 +127,53 @@ const addOnRedeemParamsSchema = z.object({
   purchaseId: z.string().trim().regex(/^[a-f\d]{24}$/i, "Invalid add-on id"),
 });
 
+const promoCodeSchema = z
+  .object({
+    _id: z.string().trim().regex(/^[a-f\d]{24}$/i).optional(),
+    name: z.string().trim().min(1).max(60),
+    // Letters, digits, dashes: a code is typed by hand, often read off a
+    // flyer, so anything needing a keyboard switch is refused here.
+    code: z
+      .string()
+      .trim()
+      .min(3)
+      .max(24)
+      .regex(/^[a-z0-9-]+$/i, "Use letters, numbers and dashes only"),
+    discountType: z.enum(["percent", "fixed"]).optional().default("percent"),
+    discountValue: z.coerce.number().int().min(1).max(10000000),
+    appliesTo: z.enum(["ticket", "addons"]).optional().default("ticket"),
+    maxUses: z.coerce.number().int().min(0).max(200000).optional().default(0),
+    perUserLimit: z.coerce.number().int().min(1).max(20).optional().default(1),
+    endsAt: z.string().trim().datetime().optional().nullable(),
+    active: z.boolean().optional().default(true),
+  })
+  .superRefine((value, ctx) => {
+    if (value.discountType === "percent" && value.discountValue > 100) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["discountValue"],
+        message: "A percentage discount cannot be more than 100%",
+      });
+    }
+  });
+
+const previewPromoCodeSchema = z.object({
+  code: z.string().trim().min(1).max(24),
+  quantity: z.coerce.number().int().min(1).max(10).optional().default(1),
+  ticketCategoryId: z.string().trim().min(1).max(60).optional(),
+  addOns: z
+    .array(
+      z.object({
+        addOnId: z.string().trim().regex(/^[a-f\d]{24}$/i, "Invalid add-on id"),
+        variantName: z.string().trim().max(40).optional(),
+        quantity: z.coerce.number().int().min(1).max(20).optional().default(1),
+      }),
+    )
+    .max(20)
+    .optional()
+    .default([]),
+});
+
 const addOnSchema = z
   .object({
     name: z.string().trim().min(1).max(60),
@@ -233,6 +280,7 @@ const createEventSchema = z
     expectedTickets: z.coerce.number().int().min(1).max(200000),
     ticketCategories: z.array(ticketCategorySchema).max(12).optional().default([]),
     addOns: z.array(addOnSchema).max(20).optional().default([]),
+    promoCodes: z.array(promoCodeSchema).max(50).optional().default([]),
     recurrence: recurrenceSchema.optional().default({ type: "none", interval: 1, daysOfWeek: [] }),
     pricing: pricingSchema.optional().default({
       dynamicEnabled: false,
@@ -448,6 +496,7 @@ const updateEventSchema = z
     expectedTickets: z.coerce.number().int().min(1).max(200000).optional(),
     ticketCategories: z.array(ticketCategorySchema).max(12).optional(),
     addOns: z.array(addOnSchema).max(20).optional(),
+    promoCodes: z.array(promoCodeSchema).max(50).optional(),
     recurrence: recurrenceSchema.optional(),
     pricing: pricingSchema.optional(),
     resale: resalePolicySchema.optional(),
@@ -587,6 +636,7 @@ const initializeTicketPurchaseSchema = z.object({
   email: z.string().email().trim().max(160).optional(),
   attendeeName: z.string().trim().max(140).optional(),
   callbackUrl: z.string().trim().url().max(400).optional(),
+  promoCode: z.string().trim().max(24).optional(),
   // Without this the basket is stripped before the service ever sees it, and
   // the buyer is charged for the ticket alone while the app shows the total.
   addOns: z
@@ -823,6 +873,7 @@ module.exports = {
   verifyEventFeatureSchema,
   searchEventCentersQuerySchema,
   geocodeSearchQuerySchema,
+  previewPromoCodeSchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
   addOnRedeemParamsSchema,

@@ -21,6 +21,7 @@ const EventPostComment = require("../models/event-post-comment.model");
 const EventReminderPreference = require("../models/event-reminder-preference.model");
 const TicketResaleBid = require("../models/ticket-resale-bid.model");
 const addOnService = require("./event-add-on.service");
+const promoCodeService = require("./promo-code.service");
 const EventAddOnPurchase = require("../models/event-add-on-purchase.model");
 const { refundTicketAddOns } = require("./refund.service");
 const TicketTodo = require("../models/ticket-todo.model");
@@ -71,6 +72,10 @@ const {
   normalizeEventFeeConfig,
   computePrimaryTicketPricing,
   computeCheckoutTotals,
+  withPromoDiscount,
+  splitDiscountAcrossUnits,
+  splitDiscountAcrossAmounts,
+  buildSeatPricing,
 } = require("./pricing.service");
 const {
   finalizePremiumSubscriptionPaymentAttempt,
@@ -1064,6 +1069,11 @@ const mapEventForResponse = ({
 
   const eventJson = event.toJSON();
 
+  /* Promo codes are the organizer's, not the event's. Left on the response
+     every buyer would be handed the list of codes they were never given.
+     The organizer reads them from their own endpoint instead. */
+  delete eventJson.promoCodes;
+
   return {
     ...eventJson,
     // Each tier carries its own live state so clients can grey out or label a
@@ -1286,6 +1296,11 @@ const issueSeatTicketsForPurchase = async ({
   verifiedAt,
   purchaseBatchId,
   paymentMetadataBase = {},
+  /* One breakdown per seat. Each ticket has to carry the pricing for
+     ITSELF: the wallet credits every ticket from its own stored breakdown,
+     so a shared order-level breakdown would pay the organizer for the whole
+     order once per ticket in it. */
+  seatPricings = [],
 }) => {
   const normalizedQuantity = Math.max(1, Number(quantity || 1));
   const createdTickets = [];
@@ -1296,6 +1311,11 @@ const issueSeatTicketsForPurchase = async ({
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const ticketCode = await buildTicketCode();
 
+      const seatPricing = seatPricings[seatIndex] || null;
+      const seatPriceNaira = seatPricing
+        ? Math.max(0, Math.round(Number(seatPricing.totalCheckoutNaira || 0)))
+        : unitPriceNaira;
+
       try {
         created = await EventTicket.create({
           eventId: event._id,
@@ -1305,13 +1325,14 @@ const issueSeatTicketsForPurchase = async ({
           quantity: 1,
           ticketCategoryId: selectedCategory?._id || null,
           ticketCategoryName: selectedCategory?.name || "",
-          unitPriceNaira,
-          totalPriceNaira: unitPriceNaira,
+          unitPriceNaira: seatPriceNaira,
+          totalPriceNaira: seatPriceNaira,
           currency: "NGN",
           status: ticketStatus,
           paymentProvider,
           paymentMetadata: {
             ...paymentMetadataBase,
+            ...(seatPricing ? { pricingBreakdown: seatPricing } : {}),
             purchaseBatchId,
             purchaseBatchQuantity: normalizedQuantity,
             purchaseSeatNumber: seatIndex + 1,
@@ -1443,6 +1464,7 @@ const createEvent = async ({ actorUserId, payload }) => {
     expectedTickets,
     ticketCategories,
     addOns: Array.isArray(payload.addOns) ? payload.addOns : [],
+    promoCodes: promoCodeService.normalizePromoCodesInput(payload.promoCodes),
     recurrence,
     pricing: payload.pricing || undefined,
     resale: payload.resale || undefined,
@@ -2410,6 +2432,13 @@ const finalizeTicketPurchasePayment = async ({
             await creditAddOnSale({ purchase, session });
           }
         }
+
+        /* The money moved, so any promo code this checkout was holding is
+           now spent. In the same transaction as the credits it reduced. */
+        await promoCodeService.confirmRedemptions({
+          purchaseBatchId: batchId,
+          session,
+        });
       }
 
       await markPaymentAttemptVerified({
@@ -3508,6 +3537,124 @@ const getEventAddOnFulfilment = async ({ eventId, actorUserId, redemption }) => 
   };
 };
 
+/** The organizer's codes, with what each has been used for so far. */
+const listEventPromoCodes = async ({ eventId, actorUserId }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  const items = await promoCodeService.describePromoCodes({ event });
+
+  return {
+    items,
+    givenAwayNaira: items.reduce(
+      (sum, item) => sum + Number(item.givenAwayNaira || 0),
+      0,
+    ),
+    paidUseCount: items.reduce(
+      (sum, item) => sum + Number(item.paidUseCount || 0),
+      0,
+    ),
+  };
+};
+
+/**
+ * What a code would be worth on the order a buyer is currently holding.
+ *
+ * Priced by the same code path the purchase uses, against the same live
+ * prices and stock, so the number on the checkout screen is the number that
+ * will be charged. Reserves nothing: looking is not using.
+ */
+const previewEventPromoCode = async ({ eventId, actorUserId, payload }) => {
+  const now = new Date();
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  const quantity = Math.max(1, Math.round(Number(payload.quantity || 1)));
+  const hasTicketCategories =
+    Array.isArray(event.ticketCategories) && event.ticketCategories.length > 0;
+  const requestedCategoryId = String(payload.ticketCategoryId || "").trim();
+  const selectedCategory = hasTicketCategories
+    ? event.ticketCategories.find(
+        (category) => String(category._id) === requestedCategoryId,
+      ) || (event.ticketCategories.length === 1 ? event.ticketCategories[0] : null)
+    : null;
+
+  const occurrence = resolveOccurrenceWindow(event, now);
+  const reserved = await countReservedTickets(
+    event._id,
+    selectedCategory ? String(selectedCategory._id) : null,
+  );
+  const dynamicPricing = getDynamicTicketPricing({
+    event,
+    occurrence,
+    soldTickets: reserved,
+    pendingTickets: 0,
+    now,
+  });
+  const baseUnitPriceNaira = event.isPaid
+    ? selectedCategory
+      ? Number(selectedCategory.priceNaira || 0)
+      : Number(
+          dynamicPricing.currentTicketPriceNaira || event.ticketPriceNaira || 0,
+        )
+    : 0;
+  const ticketPricing = computePrimaryTicketPricing({
+    baseUnitPriceNaira,
+    quantity,
+    platformFeePercent: Number(
+      event.platformFeePercent ?? DEFAULT_PLATFORM_FEE_PERCENT,
+    ),
+    feeMode: event.feeMode || "absorbed_by_organizer",
+  });
+
+  const addOnLines = await addOnService.resolveAddOnSelection({
+    event,
+    requested: Array.isArray(payload.addOns) ? payload.addOns : [],
+    ticketQuantity: quantity,
+  });
+
+  const promo = await promoCodeService.resolvePromoCodeForCheckout({
+    event,
+    code: payload.code,
+    buyerUserId: actorUserId,
+    ticketPricing,
+    addOnPricings: addOnLines.map((line) => line.pricingBreakdown),
+    now,
+  });
+
+  if (!promo) {
+    throw new ApiError(400, "Enter a promo code", null, "PROMO_CODE_UNKNOWN");
+  }
+
+  const addOnsCheckoutNaira = addOnLines.reduce(
+    (sum, line) => sum + Number(line.pricingBreakdown.totalCheckoutNaira || 0),
+    0,
+  );
+  const subtotalNaira = ticketPricing.totalCheckoutNaira + addOnsCheckoutNaira;
+
+  return {
+    code: promoCodeService.normalizeCodeText(promo.promoCode.code),
+    appliesTo: promo.appliesTo,
+    discountType: promo.promoCode.discountType || "percent",
+    discountValue: Number(promo.promoCode.discountValue || 0),
+    discountNaira: promo.discountNaira,
+    /* True when the code is good but the order has nothing for it to come
+       off yet. The client asks for an add-on rather than reporting a
+       broken code. */
+    needsAddOn: Boolean(promo.needsAddOn),
+    subtotalNaira,
+    totalNaira: Math.max(0, subtotalNaira - promo.discountNaira),
+  };
+};
+
 /**
  * What a held ticket could move up to.
  *
@@ -3989,7 +4136,17 @@ const updateEvent = async ({
 
   const payloadWithoutCenterId = { ...payload };
   delete payloadWithoutCenterId.eventCenterId;
+  delete payloadWithoutCenterId.promoCodes;
   Object.assign(event, payloadWithoutCenterId);
+
+  /* Normalized rather than assigned: codes are uppercased, checked against
+     each other for duplicates, and a percentage over 100 is refused here
+     rather than at checkout. */
+  if (Array.isArray(payload.promoCodes)) {
+    event.promoCodes = promoCodeService.normalizePromoCodesInput(
+      payload.promoCodes,
+    );
+  }
 
   if (hasTicketCategoriesUpdate) {
     const normalizedCategories = normalizeTicketCategories({
@@ -4420,14 +4577,78 @@ const initializeTicketPurchase = async ({
     ),
     feeMode: event.feeMode || "absorbed_by_organizer",
   });
-  const checkoutUnitPriceNaira = pricingBreakdown.unitCheckoutPriceNaira;
-  /* The ticket's own breakdown is untouched. Add-ons are summed on top, so
-     what Paystack is asked for is the whole basket. */
-  const checkoutTotals = computeCheckoutTotals({
+  /* This buyer's previous attempt at this event is cancelled further down,
+     so its hold on a code goes first — nobody should be blocked by their own
+     abandoned checkout. */
+  await promoCodeService.releaseBuyerReservations({
+    eventId: event._id,
+    buyerUserId: actorUserId,
+    reason: "checkout_restarted",
+  });
+
+  /* Resolved against real prices, so a code can never take off more than
+     the thing it applies to actually costs. */
+  const promo = await promoCodeService.resolvePromoCodeForCheckout({
+    event,
+    code: payload.promoCode,
+    buyerUserId: actorUserId,
     ticketPricing: pricingBreakdown,
     addOnPricings: addOnLines.map((line) => line.pricingBreakdown),
+    now,
+  });
+
+  /* An add-on code with no add-on in the order is the buyer's to fix, not a
+     dead end: the client asks them to pick one rather than reporting a
+     broken code. */
+  if (promo?.needsAddOn) {
+    throw new ApiError(
+      409,
+      `${promoCodeService.normalizeCodeText(promo.promoCode.code)} comes off add-ons. Add one to this order to use it.`,
+      { promoCode: promoCodeService.normalizeCodeText(promo.promoCode.code) },
+      "PROMO_CODE_NEEDS_ADDON",
+    );
+  }
+
+  const promoDiscountNaira = Number(promo?.discountNaira || 0);
+  const promoAppliesToTicket = promo?.appliesTo === "ticket";
+  const discountedTicketPricing = promoAppliesToTicket
+    ? withPromoDiscount({
+        pricing: pricingBreakdown,
+        discountNaira: promoDiscountNaira,
+      })
+    : { ...pricingBreakdown, promoDiscountNaira: 0 };
+
+  /* A code that comes off "add-ons" is spread across the add-on lines in
+     proportion to their price. Each line is credited net of its own share,
+     so the organizer's payout drops by exactly what the buyer saved. */
+  const addOnDiscountShares = promoAppliesToTicket
+    ? addOnLines.map(() => 0)
+    : splitDiscountAcrossAmounts(
+        promoDiscountNaira,
+        addOnLines.map((line) => line.pricingBreakdown.totalCheckoutNaira),
+      );
+  const discountedAddOnLines = addOnLines.map((line, index) => ({
+    ...line,
+    pricingBreakdown: withPromoDiscount({
+      pricing: line.pricingBreakdown,
+      discountNaira: addOnDiscountShares[index] || 0,
+    }),
+  }));
+  const checkoutTotals = computeCheckoutTotals({
+    ticketPricing: discountedTicketPricing,
+    addOnPricings: discountedAddOnLines.map((line) => line.pricingBreakdown),
   });
   const totalCheckoutNaira = checkoutTotals.totalCheckoutNaira;
+  /* Every ticket in the order carries its own share, so the wallet settles
+     each row against what that row was actually worth. */
+  const seatDiscounts = splitDiscountAcrossUnits(
+    promoAppliesToTicket ? promoDiscountNaira : 0,
+    quantity,
+  );
+  const checkoutUnitPriceNaira = Math.max(
+    0,
+    pricingBreakdown.unitCheckoutPriceNaira - Math.max(...seatDiscounts, 0),
+  );
   const attendeeEmail = String(payload.email || buyer.email || "").trim().toLowerCase();
 
   if (!attendeeEmail) {
@@ -4477,6 +4698,10 @@ const initializeTicketPurchase = async ({
         purchaseBatchId: row.paymentMetadata?.purchaseBatchId,
         reason: "checkout_restarted",
       });
+      await promoCodeService.releaseRedemptions({
+        purchaseBatchId: row.paymentMetadata?.purchaseBatchId,
+        reason: "checkout_restarted",
+      });
     }
   }
 
@@ -4487,11 +4712,15 @@ const initializeTicketPurchase = async ({
   const initialPaymentProvider =
     event.isPaid && !shouldBypassPaystack ? "paystack" : "none";
   const instantTicketStamp = event.isPaid && !shouldBypassPaystack ? null : new Date();
+  const seatPricings = seatDiscounts.map((seatDiscountNaira) =>
+    buildSeatPricing({ pricing: pricingBreakdown, seatDiscountNaira }),
+  );
   const issuedTickets = await issueSeatTicketsForPurchase({
     event,
     buyerUserId: actorUserId,
     quantity,
     unitPriceNaira: checkoutUnitPriceNaira,
+    seatPricings,
     attendeeName,
     attendeeEmail,
     selectedCategory,
@@ -4505,12 +4734,37 @@ const initializeTicketPurchase = async ({
       basePriceNaira: Number(event.ticketPriceNaira || 0),
       appliedUnitPriceNaira: checkoutUnitPriceNaira,
       batchTotalPriceNaira: totalCheckoutNaira,
-      pricingBreakdown,
+      /* The order's own figures, for reading back what the basket cost.
+         Each ticket's `pricingBreakdown` is its own seat's — that is the
+         one the wallet settles against. */
+      orderPricingBreakdown: promoAppliesToTicket
+        ? discountedTicketPricing
+        : pricingBreakdown,
+      promo: promo
+        ? {
+            code: promoCodeService.normalizeCodeText(promo.promoCode.code),
+            name: promo.promoCode.name,
+            appliesTo: promo.appliesTo,
+            discountNaira: promoDiscountNaira,
+          }
+        : null,
       salePhase: isPresalePurchase ? "presale" : "main",
     },
   });
 
   const primaryTicket = issuedTickets[0];
+
+  /* Held, not spent: a code is only used up once the payment settles, so an
+     abandoned checkout hands it back. */
+  await promoCodeService.reserveRedemption({
+    event,
+    promoCode: promo?.promoCode,
+    appliesTo: promo?.appliesTo,
+    discountNaira: promoDiscountNaira,
+    buyerUserId: actorUserId,
+    ticket: primaryTicket,
+    purchaseBatchId,
+  });
 
   /* Add-ons hang off the order's primary ticket. They ride its lifecycle:
      pending beside a pending ticket, paid when the payment settles. */
@@ -4518,7 +4772,7 @@ const initializeTicketPurchase = async ({
     event,
     ticket: primaryTicket,
     buyerUserId: actorUserId,
-    lines: addOnLines,
+    lines: discountedAddOnLines,
     status: initialTicketStatus === "paid" ? "paid" : "pending",
     purchaseBatchId,
   });
@@ -4544,6 +4798,8 @@ const initializeTicketPurchase = async ({
       });
     }
 
+    await promoCodeService.confirmRedemptions({ purchaseBatchId });
+
     return {
       requiresPayment: false,
       ticket: withClientTicketIdentity(primaryTicket),
@@ -4555,10 +4811,16 @@ const initializeTicketPurchase = async ({
       pricingBreakdown: {
         basePriceNaira: pricingBreakdown.basePriceNaira,
         veraFeeNaira: pricingBreakdown.veraFeeNaira,
-        totalCheckoutNaira: pricingBreakdown.totalCheckoutNaira,
-        organizerNetNaira: pricingBreakdown.organizerNetNaira,
+        /* What the buyer is actually charged for this basket, code and
+           add-ons included — the number the payment is created for. */
+        totalCheckoutNaira,
+        organizerNetNaira: checkoutTotals.organizerNetNaira,
         platformFeePercent: pricingBreakdown.platformFeePercent,
         feeMode: pricingBreakdown.feeMode,
+        promoDiscountNaira,
+        promoCode: promo
+          ? promoCodeService.normalizeCodeText(promo.promoCode.code)
+          : "",
       },
     };
   }
@@ -4601,6 +4863,10 @@ const initializeTicketPurchase = async ({
         },
       },
     );
+    await promoCodeService.releaseRedemptions({
+      purchaseBatchId,
+      reason: "checkout_failed",
+    });
     throw error;
   }
 
@@ -4614,7 +4880,6 @@ const initializeTicketPurchase = async ({
         paymentAccessCode: paymentAttempt.accessCode,
         "paymentMetadata.initializePayload": paymentAttempt.paystackInitializePayload,
         "paymentMetadata.paymentAttemptId": String(paymentAttempt._id),
-        "paymentMetadata.pricingBreakdown": pricingBreakdown,
       },
     },
   );
@@ -4641,10 +4906,16 @@ const initializeTicketPurchase = async ({
     pricingBreakdown: {
       basePriceNaira: pricingBreakdown.basePriceNaira,
       veraFeeNaira: pricingBreakdown.veraFeeNaira,
-      totalCheckoutNaira: pricingBreakdown.totalCheckoutNaira,
-      organizerNetNaira: pricingBreakdown.organizerNetNaira,
+      /* What the buyer is actually charged for this basket, code and
+         add-ons included — the number the payment is created for. */
+      totalCheckoutNaira,
+      organizerNetNaira: checkoutTotals.organizerNetNaira,
       platformFeePercent: pricingBreakdown.platformFeePercent,
       feeMode: pricingBreakdown.feeMode,
+      promoDiscountNaira,
+      promoCode: promo
+        ? promoCodeService.normalizeCodeText(promo.promoCode.code)
+        : "",
     },
   };
 };
@@ -6147,11 +6418,31 @@ const createTicketResale = async ({ ticketId, actorUserId, payload }) => {
     1,
     Math.round(Number(ticket.unitPriceNaira || 0) * resaleQuantity),
   );
+  const markupCeiling = Math.round(
+    baseCostNaira * (1 + policy.maxMarkupPercent / 100),
+  );
+
+  /* A ticket bought with a promo code may be resold at what its holder paid,
+     but never above the price everyone else pays: the discount was the
+     organizer's gift to that buyer, not a margin to sell on. Tickets bought
+     at full price are untouched by this and keep the event's own markup. */
+  const seatDiscountNaira = Math.max(
+    0,
+    Math.round(
+      Number(ticket?.paymentMetadata?.pricingBreakdown?.promoDiscountNaira || 0),
+    ),
+  );
+  const fullPriceCeiling =
+    seatDiscountNaira > 0
+      ? Math.round(
+          (Math.max(0, Math.round(Number(ticket.unitPriceNaira || 0))) +
+            seatDiscountNaira) *
+            resaleQuantity,
+        )
+      : markupCeiling;
   const maxAllowedPrice = Math.max(
     1,
-    Math.round(
-      baseCostNaira * (1 + policy.maxMarkupPercent / 100),
-    ),
+    Math.min(markupCeiling, Math.max(baseCostNaira, fullPriceCeiling)),
   );
 
   if (priceNaira > maxAllowedPrice) {
@@ -8734,6 +9025,8 @@ module.exports = {
   initializeTicketUpgrade,
   redeemTicketAddOn,
   getEventAddOnFulfilment,
+  listEventPromoCodes,
+  previewEventPromoCode,
   registerCheckInDevice,
   listCheckInDevices,
   revokeCheckInDevice,
