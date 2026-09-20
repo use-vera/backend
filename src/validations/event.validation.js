@@ -145,6 +145,7 @@ const promoCodeSchema = z
     maxUses: z.coerce.number().int().min(0).max(200000).optional().default(0),
     perUserLimit: z.coerce.number().int().min(1).max(20).optional().default(1),
     endsAt: z.string().trim().datetime().optional().nullable(),
+    isPublic: z.boolean().optional().default(false),
     active: z.boolean().optional().default(true),
   })
   .superRefine((value, ctx) => {
@@ -588,6 +589,10 @@ const searchEventCentersQuerySchema = z.object({
   longitude: z.coerce.number().min(-180).max(180).optional(),
 });
 
+const ticketLookupQuerySchema = z.object({
+  code: z.string().trim().min(3).max(600),
+});
+
 const geocodeSearchQuerySchema = z.object({
   query: z.string().trim().min(3).max(160),
   countryCodes: z
@@ -873,6 +878,7 @@ module.exports = {
   verifyEventFeatureSchema,
   searchEventCentersQuerySchema,
   geocodeSearchQuerySchema,
+  ticketLookupQuerySchema,
   previewPromoCodeSchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,

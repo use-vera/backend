@@ -26,7 +26,9 @@ const {
   listTicketUpgradeOptions,
   initializeTicketUpgrade,
   getEventAddOnFulfilment,
+  lookupTicketForFulfilment,
   listEventPromoCodes,
+  listAvailablePromoCodes,
   previewEventPromoCode,
   registerCheckInDevice,
   listCheckInDevices,
@@ -679,6 +681,20 @@ const getAddOnFulfilmentController = asyncHandler(async (req, res) => {
   });
 });
 
+const lookupTicketController = asyncHandler(async (req, res) => {
+  const result = await lookupTicketForFulfilment({
+    eventId: req.params.eventId,
+    code: req.query.code,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Ticket found",
+    data: result,
+  });
+});
+
 const listPromoCodesController = asyncHandler(async (req, res) => {
   const result = await listEventPromoCodes({
     eventId: req.params.eventId,
@@ -688,6 +704,19 @@ const listPromoCodesController = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: "Promo codes fetched",
+    data: result,
+  });
+});
+
+const listAvailablePromoCodesController = asyncHandler(async (req, res) => {
+  const result = await listAvailablePromoCodes({
+    eventId: req.params.eventId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Available promo codes fetched",
     data: result,
   });
 });
@@ -1089,7 +1118,9 @@ module.exports = {
   listTicketUpgradeOptionsController,
   initializeTicketUpgradeController,
   getAddOnFulfilmentController,
+  lookupTicketController,
   listPromoCodesController,
+  listAvailablePromoCodesController,
   previewPromoCodeController,
   registerCheckInDeviceController,
   listCheckInDevicesController,

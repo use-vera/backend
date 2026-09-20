@@ -8,8 +8,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // MongoDB write-conflict codes that are safe to retry a transaction on:
 // 112 = WriteConflict, 251 = NoSuchTransaction (can surface when a
-// conflicting transaction aborts this one server-side mid-flight).
-const RETRYABLE_ERROR_CODES = new Set([112, 251]);
+// conflicting transaction aborts this one server-side mid-flight),
+// 24 = LockTimeout, which is what a transaction gets when another one is
+// still holding the collection lock it needs. Nothing has been written when
+// it fires, so retrying is safe, and not retrying it drops a settlement on
+// the floor for no better reason than two orders landing together.
+const RETRYABLE_ERROR_CODES = new Set([24, 112, 251]);
 
 const isRetryableTransactionError = (error) =>
   Boolean(error?.hasErrorLabel?.("TransientTransactionError")) ||

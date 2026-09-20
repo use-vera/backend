@@ -86,6 +86,7 @@ const describePromoCodes = async ({ event }) => {
         maxUses,
         perUserLimit: Number(promoCode.perUserLimit || 1),
         endsAt: promoCode.endsAt || null,
+        isPublic: promoCode.isPublic === true,
         active: promoCode.active !== false,
         usedCount,
         remainingUses: maxUses > 0 ? Math.max(0, maxUses - usedCount) : null,
@@ -94,6 +95,57 @@ const describePromoCodes = async ({ event }) => {
       };
     }),
   );
+};
+
+/**
+ * The codes a buyer is allowed to see on an event.
+ *
+ * Only the ones the organizer chose to list, and only while they are worth
+ * tapping: expired, paused, exhausted, and "you have already used this" ones
+ * are left out rather than shown as dead ends. What comes back is the
+ * offer — never the usage figures, which are the organizer's business.
+ */
+const listPublicPromoCodes = async ({ event, buyerUserId, now = new Date() }) => {
+  const listed = (event.promoCodes || []).filter(
+    (promoCode) =>
+      promoCode.isPublic === true &&
+      promoCode.active !== false &&
+      (!promoCode.endsAt || new Date(promoCode.endsAt) > now),
+  );
+
+  const available = await Promise.all(
+    listed.map(async (promoCode) => {
+      const maxUses = Number(promoCode.maxUses || 0);
+      const [used, usedByBuyer] = await Promise.all([
+        maxUses > 0
+          ? countLiveRedemptions({ promoCodeId: promoCode._id })
+          : Promise.resolve(0),
+        buyerUserId
+          ? countLiveRedemptions({ promoCodeId: promoCode._id, buyerUserId })
+          : Promise.resolve(0),
+      ]);
+
+      if (maxUses > 0 && used >= maxUses) {
+        return null;
+      }
+
+      if (usedByBuyer >= Math.max(1, Number(promoCode.perUserLimit || 1))) {
+        return null;
+      }
+
+      return {
+        _id: String(promoCode._id),
+        name: promoCode.name,
+        code: normalizeCodeText(promoCode.code),
+        discountType: promoCode.discountType || "percent",
+        discountValue: Number(promoCode.discountValue || 0),
+        appliesTo: promoCode.appliesTo || "ticket",
+        endsAt: promoCode.endsAt || null,
+      };
+    }),
+  );
+
+  return available.filter(Boolean);
 };
 
 /**
@@ -136,6 +188,7 @@ const normalizePromoCodesInput = (promoCodes = []) => {
       maxUses: Math.max(0, Math.round(Number(promoCode.maxUses || 0))),
       perUserLimit: Math.max(1, Math.round(Number(promoCode.perUserLimit || 1))),
       endsAt: promoCode.endsAt ? new Date(promoCode.endsAt) : null,
+      isPublic: promoCode.isPublic === true,
       active: promoCode.active !== false,
     };
   });
@@ -365,6 +418,7 @@ module.exports = {
   normalizeCodeText,
   findPromoCode,
   describePromoCodes,
+  listPublicPromoCodes,
   normalizePromoCodesInput,
   resolvePromoCodeForCheckout,
   reserveRedemption,

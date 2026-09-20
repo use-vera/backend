@@ -3563,6 +3563,28 @@ const listEventPromoCodes = async ({ eventId, actorUserId }) => {
 };
 
 /**
+ * The codes an event is advertising, for the buyer's own list.
+ *
+ * Deliberately separate from the organizer's endpoint: this one answers
+ * "what can I use", never "what has this cost you", and it only ever knows
+ * about codes the organizer chose to list.
+ */
+const listAvailablePromoCodes = async ({ eventId, actorUserId }) => {
+  const event = await Event.findById(eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  return {
+    items: await promoCodeService.listPublicPromoCodes({
+      event,
+      buyerUserId: actorUserId,
+    }),
+  };
+};
+
+/**
  * What a code would be worth on the order a buyer is currently holding.
  *
  * Priced by the same code path the purchase uses, against the same live
@@ -5500,6 +5522,28 @@ const checkInTicket = async ({ actorUserId, payload }) => {
   const addOns = await addOnService.listTicketAddOns({ ticketId: ticket._id });
 
   return { ...result, addOns: addOns.map((row) => row.toObject()) };
+};
+
+/**
+ * A ticket and what it still holds, without admitting anyone.
+ *
+ * The desk needs this and the door's endpoint cannot serve it: checking in
+ * is a state change, so looking someone up with it would silently admit a
+ * ticket that had not reached the gate yet. Reading is reading.
+ */
+const lookupTicketForFulfilment = async ({ eventId, code, actorUserId }) => {
+  const { ticket, event } = await findTicketByScanCode({ code, eventId });
+
+  await ensureEventCanBeManagedBy(event, actorUserId);
+
+  const addOns = await addOnService.listTicketAddOns({ ticketId: ticket._id });
+
+  return {
+    ticket: withClientTicketIdentity(ticket),
+    alreadyUsed: ticket.status === "used",
+    checkedInAt: ticket.usedAt || null,
+    addOns: addOns.map((row) => row.toObject()),
+  };
 };
 
 /**
@@ -9025,7 +9069,9 @@ module.exports = {
   initializeTicketUpgrade,
   redeemTicketAddOn,
   getEventAddOnFulfilment,
+  lookupTicketForFulfilment,
   listEventPromoCodes,
+  listAvailablePromoCodes,
   previewEventPromoCode,
   registerCheckInDevice,
   listCheckInDevices,

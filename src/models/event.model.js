@@ -330,6 +330,13 @@ const promoCodeSchema = new Schema(
       type: Date,
       default: null,
     },
+    // Listed on the event for anyone to see and tap, the way a food app
+    // shows its offers. Off by default: a code handed to twenty people by
+    // name must never appear to everyone because someone added a feature.
+    isPublic: {
+      type: Boolean,
+      default: false,
+    },
     active: {
       type: Boolean,
       default: true,

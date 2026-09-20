@@ -27,6 +27,7 @@ const {
   verifyEventFeatureSchema,
   searchEventCentersQuerySchema,
   geocodeSearchQuerySchema,
+  ticketLookupQuerySchema,
   previewPromoCodeSchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
@@ -104,7 +105,9 @@ const {
   listTicketUpgradeOptionsController,
   initializeTicketUpgradeController,
   getAddOnFulfilmentController,
+  lookupTicketController,
   listPromoCodesController,
+  listAvailablePromoCodesController,
   previewPromoCodeController,
   registerCheckInDeviceController,
   listCheckInDevicesController,
@@ -379,6 +382,13 @@ router.get(
 );
 
 router.get(
+  "/:eventId/tickets/lookup",
+  validateParams(eventIdParamsSchema),
+  validateQuery(ticketLookupQuerySchema),
+  lookupTicketController,
+);
+
+router.get(
   "/:eventId/add-ons/fulfilment",
   validateParams(eventIdParamsSchema),
   getAddOnFulfilmentController,
@@ -394,6 +404,12 @@ router.get(
   "/:eventId/promo-codes",
   validateParams(eventIdParamsSchema),
   listPromoCodesController,
+);
+
+router.get(
+  "/:eventId/promo-codes/available",
+  validateParams(eventIdParamsSchema),
+  listAvailablePromoCodesController,
 );
 
 router.post(

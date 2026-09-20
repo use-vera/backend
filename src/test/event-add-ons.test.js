@@ -531,3 +531,85 @@ test("the tickets list carries the add-on rows, not just a count", async () => {
   // And the roll-up a compact card uses, from the same fetch.
   expect(row.addOnSummary).toEqual({ count: 1, quantity: 1, outstanding: 1 });
 });
+
+test("looking a ticket up for the desk never admits it", async () => {
+  const {
+    lookupTicketForFulfilment,
+    checkInTicket,
+  } = require("../services/event.service");
+  const EventTicket = require("../models/event-ticket.model");
+
+  const organizer = await createUser();
+  const buyer = await createUser();
+  const dinner = addOn({ name: "Dinner", redemption: "desk", priceNaira: 0 });
+  const event = await sellingEvent(organizer._id, [dinner]);
+
+  const result = await buy({
+    event,
+    buyer,
+    addOns: [{ addOnId: String(dinner._id), quantity: 1 }],
+  });
+
+  /* Doors have to be open for a check-in to be legal, which is the state a
+     desk works in too. */
+  event.startsAt = new Date(Date.now() - HOUR_MS);
+  await event.save();
+
+  const before = await EventTicket.findById(result.ticket._id);
+  expect(before.status).toBe("paid");
+
+  const lookup = await lookupTicketForFulfilment({
+    eventId: event._id,
+    code: before.ticketCode,
+    actorUserId: organizer._id,
+  });
+
+  // The desk sees what is owed...
+  expect(lookup.addOns).toHaveLength(1);
+  expect(lookup.addOns[0].name).toBe("Dinner");
+  expect(lookup.alreadyUsed).toBe(false);
+
+  // ...and the ticket is exactly as it was. Reading is reading.
+  const after = await EventTicket.findById(result.ticket._id);
+  expect(after.status).toBe("paid");
+  expect(after.usedAt).toBeFalsy();
+
+  // It still reads correctly once the door has admitted them.
+  await checkInTicket({
+    actorUserId: organizer._id,
+    payload: { code: before.ticketCode, eventId: String(event._id) },
+  });
+
+  const afterAdmission = await lookupTicketForFulfilment({
+    eventId: event._id,
+    code: before.ticketCode,
+    actorUserId: organizer._id,
+  });
+
+  expect(afterAdmission.alreadyUsed).toBe(true);
+  expect(afterAdmission.addOns).toHaveLength(1);
+});
+
+test("only someone who can manage the event can look a ticket up", async () => {
+  const { lookupTicketForFulfilment } = require("../services/event.service");
+
+  const organizer = await createUser();
+  const buyer = await createUser();
+  const stranger = await createUser();
+  const parking = addOn({ priceNaira: 0 });
+  const event = await sellingEvent(organizer._id, [parking]);
+
+  const result = await buy({
+    event,
+    buyer,
+    addOns: [{ addOnId: String(parking._id), quantity: 1 }],
+  });
+
+  await expect(
+    lookupTicketForFulfilment({
+      eventId: event._id,
+      code: result.ticket.ticketCode,
+      actorUserId: stranger._id,
+    }),
+  ).rejects.toMatchObject({ statusCode: 403 });
+});

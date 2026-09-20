@@ -17,6 +17,7 @@ const {
   verifyTicketPayment,
   previewEventPromoCode,
   listEventPromoCodes,
+  listAvailablePromoCodes,
   createTicketResale,
 } = require("../services/event.service");
 const { verifyPaystackTransaction } = require("../services/paystack.service");
@@ -396,6 +397,61 @@ test("the organizer sees what each code has cost them", async () => {
   expect(summary.items[0].usedCount).toBe(1);
   expect(summary.items[0].remainingUses).toBe(99);
   expect(summary.givenAwayNaira).toBe(5000);
+});
+
+test("only codes the organizer listed are shown to buyers, and only while they are worth tapping", async () => {
+  const organizer = await createUser();
+  const buyer = await createUser();
+  const event = await sellingEvent({
+    organizerUserId: organizer._id,
+    promoCodes: [
+      promoCode({ code: "PUBLIC10", isPublic: true }),
+      /* Handed out by name. Listing it would give it to everyone. */
+      promoCode({ code: "VIPONLY", name: "For the VIP list" }),
+      promoCode({
+        code: "GONE",
+        name: "Launch week",
+        isPublic: true,
+        endsAt: new Date(Date.now() - HOUR_MS),
+      }),
+      promoCode({ code: "PAUSED", name: "Not yet", isPublic: true, active: false }),
+    ],
+  });
+
+  const available = await listAvailablePromoCodes({
+    eventId: event._id,
+    actorUserId: buyer._id,
+  });
+
+  expect(available.items.map((item) => item.code)).toEqual(["PUBLIC10"]);
+  // The offer, never the organizer's figures.
+  expect(available.items[0]).not.toHaveProperty("usedCount");
+  expect(available.items[0]).not.toHaveProperty("givenAwayNaira");
+});
+
+test("a listed code drops off a buyer's list once they have used it", async () => {
+  const organizer = await createUser();
+  const buyer = await createUser();
+  const other = await createUser();
+  const event = await sellingEvent({
+    organizerUserId: organizer._id,
+    promoCodes: [promoCode({ isPublic: true, perUserLimit: 1 })],
+  });
+
+  const result = await buy({ event, buyer, promo: "EARLY10" });
+  await settle({ result, buyer });
+
+  const forBuyer = await listAvailablePromoCodes({
+    eventId: event._id,
+    actorUserId: buyer._id,
+  });
+  const forOther = await listAvailablePromoCodes({
+    eventId: event._id,
+    actorUserId: other._id,
+  });
+
+  expect(forBuyer.items).toHaveLength(0);
+  expect(forOther.items.map((item) => item.code)).toEqual(["EARLY10"]);
 });
 
 test("a buyer never sees the codes they were not given", async () => {
