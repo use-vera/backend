@@ -1,7 +1,22 @@
+jest.mock("../services/paystack.service", () => ({
+  ...jest.requireActual("../services/paystack.service"),
+  initializePaystackTransaction: jest.fn().mockResolvedValue({
+    authorization_url: "https://checkout.paystack.com/mock",
+    access_code: "mock_access_code",
+    reference: "mock_reference",
+  }),
+  verifyPaystackTransaction: jest.fn().mockResolvedValue({
+    status: "success",
+    amount: 0,
+  }),
+}));
+
 const mongoose = require("mongoose");
 const {
   initializeTicketPurchase,
+  verifyTicketPayment,
 } = require("../services/event.service");
+const { verifyPaystackTransaction } = require("../services/paystack.service");
 const addOnService = require("../services/event-add-on.service");
 const EventAddOnPurchase = require("../models/event-add-on-purchase.model");
 const WalletTransaction = require("../models/wallet-transaction.model");
@@ -9,8 +24,8 @@ const { createUser, createEvent } = require("./fixtures");
 
 const HOUR_MS = 60 * 60 * 1000;
 
-/* Free events take the instant-issue path, so a whole checkout can be driven
-   without Paystack. The add-on rules under test do not branch on price. */
+/* The ticket is free, so every naira in these orders is add-on money — which
+   still has to be paid for. `buy` below drives the payment to settled. */
 const sellingEvent = (organizerUserId, addOns) =>
   createEvent({
     organizerUserId,
@@ -35,12 +50,33 @@ const addOn = (overrides) => ({
   ...overrides,
 });
 
-const buy = ({ event, buyer, addOns = [], quantity = 1 }) =>
-  initializeTicketPurchase({
+/**
+ * A whole checkout, settled. An order carrying paid add-ons needs a payment
+ * even when the ticket is free, so the tests that assert on held/paid add-ons
+ * have to take it through Paystack rather than stopping at initialize.
+ */
+const buy = async ({ event, buyer, addOns = [], quantity = 1 }) => {
+  const result = await initializeTicketPurchase({
     eventId: event._id,
     actorUserId: buyer._id,
     payload: { quantity, email: "buyer@example.com", addOns },
   });
+
+  if (result.requiresPayment) {
+    verifyPaystackTransaction.mockResolvedValueOnce({
+      status: "success",
+      amount: Number(result.pricingBreakdown.totalCheckoutNaira) * 100,
+    });
+
+    await verifyTicketPayment({
+      ticketId: result.ticket._id,
+      actorUserId: buyer._id,
+      reference: result.payment?.reference || "mock_reference",
+    });
+  }
+
+  return result;
+};
 
 test("an add-on bought with a ticket is held against that ticket", async () => {
   const organizer = await createUser();

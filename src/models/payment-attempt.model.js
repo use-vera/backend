@@ -23,6 +23,10 @@ const paymentAttemptSchema = new Schema(
         "ticket_upgrade",
         "premium_subscription",
         "event_feature",
+        // One attendee's order from a vendor at an event.
+        "vendor_order",
+        // What a vendor pays an organizer for their stall.
+        "vendor_stall_fee",
       ],
       required: true,
       index: true,

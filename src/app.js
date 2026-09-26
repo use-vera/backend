@@ -6,6 +6,7 @@ const routes = require("./routes");
 const paymentRoutes = require("./routes/payment.routes");
 const publicEventRoutes = require("./routes/public-event.routes");
 const publicCategoryRoutes = require("./routes/public-category.routes");
+const publicVendorRoutes = require("./routes/public-vendor.routes");
 const v1Routes = require("./routes/v1.routes");
 const {
   notFoundMiddleware,
@@ -44,6 +45,7 @@ app.use(
 app.use("/api/payments", paymentRoutes);
 app.use("/api/public/events", publicEventRoutes);
 app.use("/api/public/categories", publicCategoryRoutes);
+app.use("/api/public/vendors", publicVendorRoutes);
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));

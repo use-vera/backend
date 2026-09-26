@@ -19,6 +19,19 @@ const updateProfileSchema = z
     title: z.string().trim().max(120).optional(),
     bio: z.string().trim().max(280).optional(),
     state: z.string().trim().max(80).optional(),
+    /* A real date in the past, and a plausible one: a typo that makes
+       somebody 200 years old should not pass as an adult. */
+    dateOfBirth: z.coerce
+      .date()
+      .refine((value) => value.getTime() < Date.now(), {
+        message: "Date of birth must be in the past",
+      })
+      .refine(
+        (value) =>
+          value.getTime() > Date.now() - 120 * 365.25 * 24 * 60 * 60 * 1000,
+        { message: "Check that date of birth" },
+      )
+      .optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one field is required",

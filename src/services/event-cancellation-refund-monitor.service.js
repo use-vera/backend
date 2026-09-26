@@ -2,7 +2,11 @@ const mongoose = require("mongoose");
 const env = require("../config/env");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
-const { refundTicket, refundTicketAddOns } = require("./refund.service");
+const EventVendor = require("../models/event-vendor.model");
+const { refundTicket, refundStallFee } = require("./refund.service");
+const {
+  refundOrdersForCancelledEvent,
+} = require("./vendor-order.service");
 const { createNotification } = require("./notification.service");
 
 let intervalHandle = null;
@@ -18,6 +22,47 @@ const formatNaira = (naira) => `₦${Math.round(Number(naira || 0)).toLocaleStri
  * the sweep). The ticket's status stays paid/used on failure, so the next
  * tick simply retries it.
  */
+/**
+ * Settles the vendor side of a cancelled event: buyers get back what they
+ * paid for food nobody will make, vendors get their stall fee back out of
+ * the organizer's wallet, and the bookings are closed so nobody turns up.
+ */
+const sweepEventVendors = async (event) => {
+  const reason = event.cancellationReason || "Event cancelled";
+
+  await refundOrdersForCancelledEvent({ eventId: event._id, reason });
+
+  const bookings = await EventVendor.find({
+    eventId: event._id,
+    status: { $in: ["invited", "applied", "confirmed"] },
+  }).limit(100);
+
+  for (const booking of bookings) {
+    try {
+      await refundStallFee({ bookingId: booking._id, reason });
+
+      await EventVendor.updateOne(
+        { _id: booking._id },
+        {
+          $set: {
+            status: "cancelled",
+            respondedAt: new Date(),
+            responseNote: reason,
+            stallFeeDueAt: null,
+          },
+        },
+      );
+    } catch (error) {
+      /* Left as it is so the next tick retries this one booking. */
+      // eslint-disable-next-line no-console
+      console.error("[EventCancellationRefundMonitor] Vendor refund failed", {
+        bookingId: String(booking._id),
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+};
+
 const sweepEventTickets = async (event) => {
   const tickets = await EventTicket.find({
     eventId: event._id,
@@ -29,13 +74,6 @@ const sweepEventTickets = async (event) => {
       const result = await refundTicket({
         ticketId: ticket._id,
         actorUserId: event.organizerUserId,
-        reason: event.cancellationReason || "Event cancelled",
-      });
-
-      /* A cancelled event owes back the parking and the dinner too, not
-         just the ticket. Their wallet credits are separate ledger rows. */
-      await refundTicketAddOns({
-        ticketId: ticket._id,
         reason: event.cancellationReason || "Event cancelled",
       });
 
@@ -57,12 +95,19 @@ const sweepEventTickets = async (event) => {
     }
   }
 
+  await sweepEventVendors(event);
+
   const remaining = await EventTicket.countDocuments({
     eventId: event._id,
     status: { $in: ["paid", "used"] },
   });
 
-  if (remaining === 0) {
+  const vendorsLeft = await EventVendor.countDocuments({
+    eventId: event._id,
+    status: { $in: ["invited", "applied", "confirmed"] },
+  });
+
+  if (remaining === 0 && vendorsLeft === 0) {
     event.refundSweepCompletedAt = new Date();
     await event.save();
   }

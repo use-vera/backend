@@ -400,6 +400,180 @@ const getWalletTransactionById = async ({ transactionId, organizerUserId }) => {
   return transaction;
 };
 
+/**
+ * Releases one collected vendor order into the vendor's wallet.
+ *
+ * Organizers earn from vendors through the stall fee alone, so an order is
+ * one credit and one fee line. Called only when an order reaches
+ * `collected`, which is what makes the hold real — money that was taken from
+ * the buyer at checkout sits with Vera until the food is handed over.
+ *
+ * A vendor's wallet is the same OrganizerWallet everyone else uses, keyed by
+ * the user who owns the vendor. The field is named organizerUserId for
+ * history; it has always meant "the user this wallet belongs to", and reusing
+ * it means settlement, payouts and withdrawals already work for vendors.
+ */
+const creditVendorOrder = async ({ order, session, event: providedEvent = null }) => {
+  const event =
+    providedEvent || (await Event.findById(order.eventId).session(session));
+
+  if (!event) {
+    throw new ApiError(500, "Event not found while crediting a vendor order", {
+      orderId: order?._id,
+    });
+  }
+
+  const settlementFor = async (userId) => {
+    const owner = await User.findById(userId).select("payoutTier").session(session);
+
+    return new Date(
+      new Date(event.endsAt).getTime() +
+        getSettlementDelayHours(owner?.payoutTier) * 60 * 60 * 1000,
+    );
+  };
+
+  const credit = async ({ userId, type, amountNaira, description, feeKobo = 0 }) => {
+    const amountKobo = nairaToKobo(amountNaira);
+
+    if (amountKobo <= 0) {
+      return;
+    }
+
+    const idempotencyKey = `${type}:${order._id}`;
+
+    if (await WalletTransaction.exists({ idempotencyKey }).session(session)) {
+      return;
+    }
+
+    const wallet = await getOrCreateWallet(userId, session);
+
+    const [created] = await WalletTransaction.create(
+      [
+        {
+          walletId: wallet._id,
+          organizerUserId: userId,
+          type,
+          amountKobo,
+          bucket: "pending",
+          status: "pending_settlement",
+          settlementEligibleAt: await settlementFor(userId),
+          eventId: order.eventId,
+          vendorOrderId: order._id,
+          idempotencyKey,
+          description,
+          metadata: { pricing: order.pricing },
+        },
+      ],
+      { session },
+    );
+
+    await OrganizerWallet.updateOne(
+      { _id: wallet._id },
+      {
+        $inc: {
+          pendingBalanceKobo: amountKobo,
+          lifetimeGrossSalesKobo: amountKobo,
+          lifetimePlatformFeesKobo: feeKobo,
+          version: 1,
+        },
+      },
+      { session },
+    );
+
+    if (feeKobo > 0) {
+      /* Informational only: already netted out of the credit above, so it
+         must not touch a balance a second time. */
+      await WalletTransaction.create(
+        [
+          {
+            walletId: wallet._id,
+            organizerUserId: userId,
+            type: "platform_fee",
+            amountKobo: -feeKobo,
+            bucket: "pending",
+            status: "completed",
+            eventId: order.eventId,
+            vendorOrderId: order._id,
+            sourceTransactionId: created._id,
+            idempotencyKey: `platform_fee:vendor_order:${order._id}`,
+            description: "Vera fee on this order",
+          },
+        ],
+        { session },
+      );
+    }
+  };
+
+  await credit({
+    userId: order.vendorUserId,
+    type: "vendor_order_sale",
+    amountNaira: order.pricing.vendorNetNaira,
+    description: "Order collected, net of fees",
+    feeKobo: nairaToKobo(order.pricing.veraFeeNaira),
+  });
+
+};
+
+/**
+ * Credits an organizer the stall fee a vendor just paid.
+ *
+ * Settles on the same clock as everything else for that event, so a stall fee
+ * and the ticket money it sits beside become available together.
+ */
+const creditStallFee = async ({ booking, event, session }) => {
+  const amountKobo = nairaToKobo(booking.terms?.stallFeeNaira);
+
+  if (amountKobo <= 0) {
+    return;
+  }
+
+  const idempotencyKey = `vendor_stall_fee:${booking._id}`;
+
+  if (await WalletTransaction.exists({ idempotencyKey }).session(session)) {
+    return;
+  }
+
+  const organizer = await User.findById(event.organizerUserId)
+    .select("payoutTier")
+    .session(session);
+  const settlementEligibleAt = new Date(
+    new Date(event.endsAt).getTime() +
+      getSettlementDelayHours(organizer?.payoutTier) * 60 * 60 * 1000,
+  );
+
+  const wallet = await getOrCreateWallet(event.organizerUserId, session);
+
+  await WalletTransaction.create(
+    [
+      {
+        walletId: wallet._id,
+        organizerUserId: event.organizerUserId,
+        type: "vendor_stall_fee",
+        amountKobo,
+        bucket: "pending",
+        status: "pending_settlement",
+        settlementEligibleAt,
+        eventId: event._id,
+        idempotencyKey,
+        description: "Stall fee from a vendor",
+      },
+    ],
+    { session },
+  );
+
+  await OrganizerWallet.updateOne(
+    { _id: wallet._id },
+    {
+      $inc: {
+        pendingBalanceKobo: amountKobo,
+        lifetimeGrossSalesKobo: amountKobo,
+        version: 1,
+      },
+    },
+    { session },
+  );
+};
+
 module.exports = {
   nairaToKobo,
   buildPaginationMeta,
@@ -407,6 +581,8 @@ module.exports = {
   creditTicketSale,
   creditAddOnSale,
   creditTicketUpgrade,
+  creditVendorOrder,
+  creditStallFee,
   getWalletSummary,
   listWalletTransactions,
   getWalletTransactionById,

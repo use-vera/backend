@@ -12,6 +12,8 @@ const followRoutes = require("./follow.routes");
 const walletRoutes = require("./wallet.routes");
 const categoryRoutes = require("./category.routes");
 const emergencyRoutes = require("./emergency.routes");
+const vendorRoutes = require("./vendor.routes");
+const vendorOrderRoutes = require("./vendor-order.routes");
 
 const router = express.Router();
 
@@ -28,5 +30,7 @@ router.use("/follows", followRoutes);
 router.use("/wallet", walletRoutes);
 router.use("/categories", categoryRoutes);
 router.use("/emergencies", emergencyRoutes);
+router.use("/vendors", vendorRoutes);
+router.use("/vendor-orders", vendorOrderRoutes);
 
 module.exports = router;

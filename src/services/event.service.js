@@ -4677,17 +4677,23 @@ const initializeTicketPurchase = async ({
     throw new ApiError(400, "Attendee email is required");
   }
 
-  const shouldBypassPaystack =
-    event.isPaid && !env.paystackSecretKey && env.paystackDevBypass;
+  /* What the basket costs decides whether we charge — not whether the ticket
+     itself has a price. A free event's ticket is ₦0, but its add-ons are not,
+     and a promo code can take a paid order down to ₦0. Keying any of the
+     branches below off event.isPaid handed out paid add-ons for free. */
+  const requiresPayment = totalCheckoutNaira > 0;
 
-  if (event.isPaid && !env.paystackSecretKey && !shouldBypassPaystack) {
+  const shouldBypassPaystack =
+    requiresPayment && !env.paystackSecretKey && env.paystackDevBypass;
+
+  if (requiresPayment && !env.paystackSecretKey && !shouldBypassPaystack) {
     throw new ApiError(
       503,
       "Paid checkout is not configured yet. Set PAYSTACK_SECRET_KEY.",
     );
   }
 
-  if (event.isPaid && !shouldBypassPaystack) {
+  if (requiresPayment && !shouldBypassPaystack) {
     await EventTicket.updateMany(
       {
         eventId: event._id,
@@ -4730,10 +4736,11 @@ const initializeTicketPurchase = async ({
   const purchaseBatchId = buildPurchaseBatchId();
   const attendeeName = String(payload.attendeeName || buyer.fullName || "").trim();
   const initialTicketStatus =
-    event.isPaid && !shouldBypassPaystack ? "pending" : "paid";
+    requiresPayment && !shouldBypassPaystack ? "pending" : "paid";
   const initialPaymentProvider =
-    event.isPaid && !shouldBypassPaystack ? "paystack" : "none";
-  const instantTicketStamp = event.isPaid && !shouldBypassPaystack ? null : new Date();
+    requiresPayment && !shouldBypassPaystack ? "paystack" : "none";
+  const instantTicketStamp =
+    requiresPayment && !shouldBypassPaystack ? null : new Date();
   const seatPricings = seatDiscounts.map((seatDiscountNaira) =>
     buildSeatPricing({ pricing: pricingBreakdown, seatDiscountNaira }),
   );
@@ -4799,15 +4806,15 @@ const initializeTicketPurchase = async ({
     purchaseBatchId,
   });
 
-  if (!event.isPaid || shouldBypassPaystack) {
-    // These tickets were marked "paid" immediately above (free event, or
+  if (!requiresPayment || shouldBypassPaystack) {
+    // These tickets were marked "paid" immediately above (nothing to pay, or
     // dev-bypass). FinalizeTicketPurchasePayment is never called for them,
     // so this is the only place that credits the organizer's wallet for
     // this batch. Grouped in one transaction since they're all for the
     // same event/organizer; not joined with the ticket-issuance writes
     // above (issueSeatTicketsForPurchase doesn't accept a session), which
-    // is an accepted, scoped gap for this low-stakes path (free tickets
-    // credit ₦0; dev-bypass is non-production).
+    // is an accepted, scoped gap for this low-stakes path (a ₦0 basket
+    // credits ₦0; dev-bypass is non-production).
     if (env.walletCreditingEnabled) {
       await withMongoTransaction(async (session) => {
         for (const issuedTicket of issuedTickets) {
@@ -9026,6 +9033,7 @@ const listEventFeed = async ({
 };
 
 module.exports = {
+  createPaymentAttemptForCheckout,
   createEvent,
   searchEventCenters,
   listEvents,

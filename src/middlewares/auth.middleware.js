@@ -1,5 +1,5 @@
 const ApiError = require("../utils/api-error");
-const { verifyAccessToken } = require("../utils/jwt");
+const { verifyAccessToken, REALTIME_SCOPE } = require("../utils/jwt");
 const User = require("../models/user.model");
 
 const authMiddleware = async (req, _res, next) => {
@@ -12,6 +12,11 @@ const authMiddleware = async (req, _res, next) => {
 
     const token = authorization.slice(7);
     const payload = verifyAccessToken(token);
+
+    /* A socket handshake token is not an API credential. */
+    if (payload?.scope === REALTIME_SCOPE) {
+      throw new ApiError(401, "Authentication token is required");
+    }
 
     const user = await User.findById(payload.userId);
 

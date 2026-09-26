@@ -1,6 +1,7 @@
 const ApiError = require("../utils/api-error");
 const EventTicket = require("../models/event-ticket.model");
 const EventAddOnPurchase = require("../models/event-add-on-purchase.model");
+const EventVendor = require("../models/event-vendor.model");
 const Event = require("../models/event.model");
 const OrganizerWallet = require("../models/organizer-wallet.model");
 const WalletTransaction = require("../models/wallet-transaction.model");
@@ -161,6 +162,10 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
     );
   });
 
+  /* Its add-ons follow it. Safe to run twice: rows already refunded are
+     skipped, which is what keeps the cancellation sweep idempotent. */
+  await refundTicketAddOns({ ticketId, reason });
+
   return claimedTicket;
 };
 
@@ -295,4 +300,123 @@ const refundTicketAddOns = async ({ ticketId, reason, onlyNonTransferable = fals
   return refunded;
 };
 
-module.exports = { refundTicket, refundAddOnPurchase, refundTicketAddOns };
+
+/**
+ * Gives a vendor their stall fee back when the event is called off.
+ *
+ * The money went to the organizer, so it comes out of the organizer's wallet
+ * the same way a ticket refund does — including going into `owing` if they
+ * have already withdrawn it. The vendor is refunded through the same
+ * Paystack charge they paid on.
+ */
+const refundStallFee = async ({ bookingId, reason }) => {
+  const booking = await EventVendor.findById(bookingId);
+
+  if (!booking || !booking.stallFeePaid) {
+    return null;
+  }
+
+  const amountNaira = Number(booking.terms?.stallFeeNaira || 0);
+
+  if (amountNaira <= 0 || !booking.stallFeePaymentReference) {
+    return null;
+  }
+
+  /* Claimed before the provider call, so two sweeps cannot both refund. */
+  const claimed = await EventVendor.findOneAndUpdate(
+    { _id: bookingId, stallFeePaid: true },
+    { $set: { stallFeePaid: false, stallFeeRefundedAt: new Date() } },
+    { new: true },
+  );
+
+  if (!claimed) {
+    return null;
+  }
+
+  try {
+    await initiatePaystackRefund({
+      transactionReference: booking.stallFeePaymentReference,
+      amountKobo: nairaToKobo(amountNaira),
+    });
+  } catch (error) {
+    await EventVendor.updateOne(
+      { _id: bookingId },
+      { $set: { stallFeePaid: true }, $unset: { stallFeeRefundedAt: "" } },
+    );
+
+    throw error;
+  }
+
+  await withMongoTransaction(async (session) => {
+    const feeTransaction = await WalletTransaction.findOne({
+      type: "vendor_stall_fee",
+      idempotencyKey: `vendor_stall_fee:${bookingId}`,
+    }).session(session);
+
+    if (!feeTransaction) {
+      return;
+    }
+
+    const wallet = await OrganizerWallet.findById(feeTransaction.walletId).session(
+      session,
+    );
+
+    if (!wallet) {
+      return;
+    }
+
+    const amountKobo = feeTransaction.amountKobo;
+    const isPreSettlement = feeTransaction.status === "pending_settlement";
+
+    if (isPreSettlement) {
+      await OrganizerWallet.updateOne(
+        { _id: wallet._id },
+        {
+          $inc: {
+            pendingBalanceKobo: -amountKobo,
+            lifetimeRefundedKobo: amountKobo,
+            version: 1,
+          },
+        },
+        { session },
+      );
+    } else {
+      const shortfallKobo = Math.max(0, amountKobo - wallet.availableBalanceKobo);
+
+      await OrganizerWallet.updateOne(
+        { _id: wallet._id },
+        {
+          $inc: {
+            availableBalanceKobo: -(amountKobo - shortfallKobo),
+            owingBalanceKobo: shortfallKobo,
+            lifetimeRefundedKobo: amountKobo,
+            version: 1,
+          },
+        },
+        { session },
+      );
+    }
+
+    await WalletTransaction.create(
+      [
+        {
+          walletId: wallet._id,
+          organizerUserId: feeTransaction.organizerUserId,
+          type: "refund",
+          amountKobo: -amountKobo,
+          bucket: isPreSettlement ? "pending" : "available",
+          status: "completed",
+          eventId: booking.eventId,
+          sourceTransactionId: feeTransaction._id,
+          idempotencyKey: `refund:stall_fee:${bookingId}`,
+          description: `Stall fee refund: ${String(reason || "event cancelled").slice(0, 200)}`,
+        },
+      ],
+      { session },
+    );
+  });
+
+  return { bookingId: toIdString(booking), amountNaira };
+};
+
+module.exports = { refundTicket, refundAddOnPurchase, refundTicketAddOns, refundStallFee };

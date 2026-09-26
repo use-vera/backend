@@ -67,6 +67,9 @@ const env = {
     process.env.JWT_SECRET ||
     "vera_dev_refresh_secret_change_me",
   jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "30d",
+  /* Long enough to survive a slow handshake, short enough that a token
+     sitting in browser memory is worth little. */
+  realtimeTokenExpiresIn: process.env.REALTIME_TOKEN_EXPIRES_IN || "2m",
   bcryptSaltRounds: toNumber(process.env.BCRYPT_SALT_ROUNDS, 12),
   corsOrigins: toList(process.env.CORS_ORIGINS, ["*"]),
   corsAllowCredentials: toBoolean(process.env.CORS_ALLOW_CREDENTIALS, false),
@@ -124,6 +127,34 @@ const env = {
   eventMemoryRetentionDays: toNumber(
     process.env.EVENT_MEMORY_RETENTION_DAYS,
     14,
+  ),
+  /**
+   * How long a vendor has to pay a stall fee before the spot goes back.
+   *
+   * A held spot is a spot the organizer cannot sell to anyone else, so the
+   * hold has to end by itself rather than waiting for someone to notice.
+   */
+  stallFeeHoldHours: toNumber(process.env.STALL_FEE_HOLD_HOURS, 4),
+  stallHoldMonitorEnabled: toBoolean(
+    process.env.STALL_HOLD_MONITOR_ENABLED,
+    true,
+  ),
+  stallHoldMonitorTickMs: toNumber(
+    process.env.STALL_HOLD_MONITOR_TICK_MS,
+    5 * 60 * 1000,
+  ),
+  /* Email. "none" keeps development quiet: mail is rendered and logged but
+     never sent, so nobody needs a provider account to run the app. */
+  emailProvider: (process.env.EMAIL_PROVIDER || "none").trim().toLowerCase(),
+  emailFrom: process.env.EMAIL_FROM || "Vera <no-reply@vera.app>",
+  emailReplyTo: process.env.EMAIL_REPLY_TO || "",
+  resendApiKey: process.env.RESEND_API_KEY || "",
+  resendBaseUrl: process.env.RESEND_BASE_URL || "https://api.resend.com",
+  smtpUrl: process.env.SMTP_URL || "",
+  /* Where links in emails point. */
+  webBaseUrl: (process.env.WEB_BASE_URL || "https://vera.app").replace(
+    /\/+$/,
+    "",
   ),
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || "",
   paystackBaseUrl: process.env.PAYSTACK_BASE_URL || "https://api.paystack.co",

@@ -155,6 +155,30 @@ const {
   downloadEventExportController,
 } = require("../controllers/event-premium.controller");
 
+const {
+  applyToEventBodySchema,
+  bookingIdParamsSchema,
+  decideApplicationBodySchema,
+  inviteVendorBodySchema,
+  vendorSettingsBodySchema,
+} = require("../validations/event-vendor.validation");
+const {
+  eventVendorParamsSchema,
+  placeOrderBodySchema,
+} = require("../validations/vendor-order.validation");
+const {
+  getVendorMenuForBuyersController,
+  listEventVendorsForBuyersController,
+  placeOrderController,
+} = require("../controllers/vendor-order.controller");
+const {
+  decideApplicationController,
+  inviteVendorController,
+  listEventVendorsController,
+  removeVendorController,
+  updateVendorSettingsController,
+} = require("../controllers/event-vendor.controller");
+
 const router = express.Router();
 
 router.use(authMiddleware);
@@ -589,6 +613,54 @@ router.get(
   validateParams(eventIdParamsSchema),
   validateQuery(listMyTicketsQuerySchema),
   listEventTicketsController,
+);
+
+/* --- ordering from a vendor at this event (buyer side) --- */
+router.get(
+  "/:eventId/vendors/open",
+  validateParams(eventIdParamsSchema),
+  listEventVendorsForBuyersController,
+);
+router.get(
+  "/:eventId/vendors/:vendorId/menu",
+  validateParams(eventVendorParamsSchema),
+  getVendorMenuForBuyersController,
+);
+router.post(
+  "/:eventId/vendors/:vendorId/orders",
+  validateParams(eventVendorParamsSchema),
+  validateBody(placeOrderBodySchema),
+  placeOrderController,
+);
+
+/* --- vendors at this event (organizer side) --- */
+router.get(
+  "/:eventId/vendors",
+  validateParams(eventIdParamsSchema),
+  listEventVendorsController,
+);
+router.patch(
+  "/:eventId/vendors/settings",
+  validateParams(eventIdParamsSchema),
+  validateBody(vendorSettingsBodySchema),
+  updateVendorSettingsController,
+);
+router.post(
+  "/:eventId/vendors/invites",
+  validateParams(eventIdParamsSchema),
+  validateBody(inviteVendorBodySchema),
+  inviteVendorController,
+);
+router.patch(
+  "/:eventId/vendors/:bookingId/decision",
+  validateParams(bookingIdParamsSchema),
+  validateBody(decideApplicationBodySchema),
+  decideApplicationController,
+);
+router.delete(
+  "/:eventId/vendors/:bookingId",
+  validateParams(bookingIdParamsSchema),
+  removeVendorController,
 );
 
 module.exports = router;

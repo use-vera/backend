@@ -50,6 +50,13 @@ Default bind host is `0.0.0.0` so mobile devices on the same network can access 
 - `PAYSTACK_BASE_URL`: Paystack API base URL (default `https://api.paystack.co`)
 - `PAYSTACK_CALLBACK_URL`: optional default callback URL for checkout redirects
 - `PAYSTACK_DEV_BYPASS`: if `true` in development, paid tickets are auto-marked paid when Paystack key is not set
+- `EMAIL_PROVIDER`: `resend`, `smtp`, or `none` (default `none`: mail is rendered and logged, never sent)
+- `EMAIL_FROM`: sender for outbound mail (default `Vera <no-reply@vera.app>`)
+- `EMAIL_REPLY_TO`: optional default reply-to address
+- `RESEND_API_KEY`: required when `EMAIL_PROVIDER=resend`
+- `RESEND_BASE_URL`: Resend API base URL (default `https://api.resend.com`)
+- `SMTP_URL`: connection string, required when `EMAIL_PROVIDER=smtp` (also run `npm i nodemailer`)
+- `WEB_BASE_URL`: where links in emails point (default `https://vera.app`)
 
 If Atlas access is blocked, verify:
 1. Current device IP is in Atlas Network Access list.

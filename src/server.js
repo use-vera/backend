@@ -21,6 +21,9 @@ const {
   startCheckoutSessionMonitor,
 } = require("./services/checkout-session-monitor.service");
 const {
+  startStallHoldMonitor,
+} = require("./services/stall-hold-monitor.service");
+const {
   startEmergencyConfidenceMonitor,
 } = require("./services/emergency-confidence-monitor.service");
 const {
@@ -46,6 +49,7 @@ const startServer = async () => {
       startFeaturedSlotMonitor();
       startWalletSettlementMonitor();
       startCheckoutSessionMonitor();
+      startStallHoldMonitor();
       startEmergencyConfidenceMonitor();
       startEventCancellationRefundMonitor();
     });

@@ -392,6 +392,20 @@ const ticketCategorySchema = new Schema(
   },
 );
 
+/* An event's default offer to vendors, and whether it is open to them. */
+const vendorSettingsSchema = new Schema(
+  {
+    acceptingApplications: { type: Boolean, default: false },
+    /* The whole of what an organizer charges a vendor. There is deliberately
+       no share of sales on top: one charge, not two. */
+    stallFeeNaira: { type: Number, default: 0, min: 0 },
+    /* How many vendors this event has room for. 0 means no stated limit. */
+    spots: { type: Number, default: 0, min: 0 },
+    setupFrom: { type: Date, default: null },
+  },
+  { _id: false },
+);
+
 const eventSchema = new Schema(
   {
     organizerUserId: {
@@ -545,6 +559,17 @@ const eventSchema = new Schema(
     promoCodes: {
       type: [promoCodeSchema],
       default: [],
+    },
+    /* What this event offers vendors. The per-vendor deal is snapshotted onto
+       the EventVendor row when it is agreed, so editing these never changes a
+       booking that already exists. */
+    vendorSettings: {
+      type: vendorSettingsSchema,
+      default: () => ({
+        acceptingApplications: false,
+        stallFeeNaira: 0,
+        spots: 0,
+      }),
     },
     recurrence: {
       type: recurrenceSchema,

@@ -2,6 +2,8 @@ const env = require("../config/env");
 const AppNotification = require("../models/notification.model");
 const DeviceToken = require("../models/device-token.model");
 const EventTicket = require("../models/event-ticket.model");
+const EventVendor = require("../models/event-vendor.model");
+const Vendor = require("../models/vendor.model");
 const { sendExpoPushMessages, isExpoPushToken } = require("./notification.service");
 const { emitEventEmergencyAlert } = require("../realtime/socket-broker");
 
@@ -16,12 +18,31 @@ const chunk = (items, size) => {
   return chunks;
 };
 
+/**
+ * Everyone standing at the event, not only everyone who bought a ticket.
+ *
+ * Vendors are on site with the crowd — often behind gas — and hold no
+ * ticket, so a ticket-only sweep leaves the people nearest the risk with no
+ * warning at all.
+ */
 const getCheckedInAttendeeUserIds = async (eventId) => {
-  const tickets = await EventTicket.find({ eventId, status: "used" })
-    .select("buyerUserId")
-    .lean();
+  const [tickets, bookings] = await Promise.all([
+    EventTicket.find({ eventId, status: "used" }).select("buyerUserId").lean(),
+    EventVendor.find({ eventId, status: "confirmed" }).select("vendorId").lean(),
+  ]);
 
-  return [...new Set(tickets.map((ticket) => String(ticket.buyerUserId)))];
+  const vendors = bookings.length
+    ? await Vendor.find({ _id: { $in: bookings.map((row) => row.vendorId) } })
+        .select("ownerUserId")
+        .lean()
+    : [];
+
+  return [
+    ...new Set([
+      ...tickets.map((ticket) => String(ticket.buyerUserId)),
+      ...vendors.map((vendor) => String(vendor.ownerUserId)),
+    ]),
+  ];
 };
 
 /**

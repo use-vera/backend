@@ -189,3 +189,54 @@ test("resubmitting within the cooldown updates the existing report instead of cr
   expect(allReportsForAttendee).toHaveLength(1);
   expect(allReportsForAttendee[0].description).toBe("smoke is spreading");
 });
+
+/* Vendors stand in the crowd with the attendees, often behind gas, and hold
+   no ticket. A ticket-only alert misses the people nearest the risk. */
+test("an emergency alert reaches confirmed vendors, not only ticket holders", async () => {
+  const {
+    getCheckedInAttendeeUserIds,
+  } = require("../services/emergency-notification.service");
+  const EventVendor = require("../models/event-vendor.model");
+  const Vendor = require("../models/vendor.model");
+  const EventTicket = require("../models/event-ticket.model");
+
+  const organizer = await createUser();
+  const vendorOwner = await createUser();
+  const attendee = await createUser();
+
+  const event = await createEvent({ organizerUserId: organizer._id });
+
+  const vendor = await Vendor.create({
+    ownerUserId: vendorOwner._id,
+    businessName: "Chilled Bar Co.",
+    slug: `chilled-${Date.now()}`,
+    categories: ["drinks"],
+  });
+
+  await EventVendor.create({
+    eventId: event._id,
+    vendorId: vendor._id,
+    status: "confirmed",
+    origin: "invite",
+  });
+
+  await EventTicket.create({
+    eventId: event._id,
+    organizerUserId: organizer._id,
+    buyerUserId: attendee._id,
+    quantity: 1,
+    unitPriceNaira: 0,
+    totalPriceNaira: 0,
+    status: "used",
+    paymentProvider: "none",
+    attendeeName: "A",
+    attendeeEmail: "a@example.com",
+    ticketCode: `VRA-${Date.now()}`,
+    barcodeValue: `bar-${Date.now()}`,
+  });
+
+  const recipients = await getCheckedInAttendeeUserIds(event._id);
+
+  expect(recipients).toContain(String(attendee._id));
+  expect(recipients).toContain(String(vendorOwner._id));
+});

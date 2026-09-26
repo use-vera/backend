@@ -61,6 +61,15 @@ const userSchema = new Schema(
       trim: true,
       default: "",
     },
+    /**
+     * Only ever asked for where it decides something: verifying a vendor's
+     * identity with their bank, and selling age-restricted items. Never
+     * required to hold a plain ticket.
+     */
+    dateOfBirth: {
+      type: Date,
+      default: null,
+    },
     title: {
       type: String,
       trim: true,

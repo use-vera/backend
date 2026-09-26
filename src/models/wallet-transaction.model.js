@@ -32,6 +32,14 @@ const walletTransactionSchema = new Schema(
         "add_on_sale",
         // The difference paid to move a ticket up a tier.
         "ticket_upgrade",
+        // A vendor's share of one order they sold and handed over.
+        "vendor_order_sale",
+        /* Historical: organizers took a cut of each order before stall fees
+           became the only charge. Never written now, kept so rows already in
+           a ledger still validate. */
+        "vendor_revenue_share",
+        // What a vendor paid the organizer for their stall.
+        "vendor_stall_fee",
         "platform_fee",
         "refund",
         "chargeback",
@@ -74,6 +82,12 @@ const walletTransactionSchema = new Schema(
     ticketId: {
       type: Schema.Types.ObjectId,
       ref: "EventTicket",
+      default: null,
+      index: true,
+    },
+    vendorOrderId: {
+      type: Schema.Types.ObjectId,
+      ref: "VendorOrder",
       default: null,
       index: true,
     },

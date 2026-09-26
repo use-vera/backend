@@ -7,6 +7,7 @@ const {
 } = require("../services/auth.service");
 const { listUserWorkspaces } = require("../services/workspace.service");
 const { syncUserSubscriptionState } = require("../services/subscription.service");
+const { signRealtimeToken } = require("../utils/jwt");
 
 const register = asyncHandler(async (req, res) => {
   const payload = req.body;
@@ -52,6 +53,21 @@ const logout = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Mints a handshake token for a client that cannot read its own bearer
+ * token, which today means the web app: its token lives in an httpOnly
+ * cookie the browser is not allowed to see.
+ */
+const createRealtimeToken = asyncHandler(async (req, res) => {
+  const token = signRealtimeToken({ userId: req.auth.userId });
+
+  res.status(200).json({
+    success: true,
+    message: "Realtime token issued",
+    data: { token },
+  });
+});
+
 const getCurrentSession = asyncHandler(async (req, res) => {
   await syncUserSubscriptionState({ user: req.user });
   const workspaces = await listUserWorkspaces(req.auth.userId);
@@ -68,6 +84,7 @@ const getCurrentSession = asyncHandler(async (req, res) => {
 
 module.exports = {
   register,
+  createRealtimeToken,
   login,
   refresh,
   logout,

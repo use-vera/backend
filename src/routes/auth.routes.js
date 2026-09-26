@@ -15,6 +15,7 @@ const {
   refresh,
   logout,
   getCurrentSession,
+  createRealtimeToken,
 } = require("../controllers/auth.controller");
 
 const router = express.Router();
@@ -24,5 +25,6 @@ router.post("/login", validateBody(loginSchema), login);
 router.post("/refresh", validateBody(refreshSchema), refresh);
 router.post("/logout", validateBody(logoutSchema), logout);
 router.get("/me", authMiddleware, getCurrentSession);
+router.post("/realtime-token", authMiddleware, createRealtimeToken);
 
 module.exports = router;
