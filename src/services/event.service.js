@@ -3,6 +3,9 @@ const ApiError = require("../utils/api-error");
 const mongoose = require("mongoose");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
+const ResaleSale = require("../models/resale-sale.model");
+const TicketTransfer = require("../models/ticket-transfer.model");
+const PayoutAccount = require("../models/payout-account.model");
 const GeofenceOverrideLog = require("../models/geofence-override-log.model");
 const CheckInAttempt = require("../models/check-in-attempt.model");
 const CheckInDevice = require("../models/check-in-device.model");
@@ -20,10 +23,18 @@ const EventPostLike = require("../models/event-post-like.model");
 const EventPostComment = require("../models/event-post-comment.model");
 const EventReminderPreference = require("../models/event-reminder-preference.model");
 const TicketResaleBid = require("../models/ticket-resale-bid.model");
+const TicketHold = require("../models/ticket-hold.model");
 const addOnService = require("./event-add-on.service");
 const promoCodeService = require("./promo-code.service");
 const EventAddOnPurchase = require("../models/event-add-on-purchase.model");
 const { refundTicketAddOns } = require("./refund.service");
+const { returnPaystackPayment } = require("./payment-refund.service");
+const {
+  claimResaleSale,
+  finalizeResalePayoutFailure,
+  finalizeResalePayoutSuccess,
+  isResalePayoutReference,
+} = require("./resale-payout.service");
 const TicketTodo = require("../models/ticket-todo.model");
 const PaymentAttempt = require("../models/payment-attempt.model");
 const Membership = require("../models/membership.model");
@@ -691,6 +702,41 @@ const getAddOnAvailabilityMap = async (event) => {
   return new Map(entries);
 };
 
+/* ---------- Holds ----------
+   Tickets someone is holding for a few minutes count as taken, for everyone
+   but the person holding them. Only primary holds touch stock. */
+
+const activeHoldMatch = (now = new Date()) => ({ kind: "primary", status: "active", expiresAt: { $gt: now } });
+
+const sumHeldTickets = async ({ eventId, ticketCategoryId = null, excludeUserId = null }) => {
+  const rows = await TicketHold.aggregate([
+    {
+      $match: {
+        ...activeHoldMatch(),
+        eventId: new mongoose.Types.ObjectId(String(eventId)),
+        ...(ticketCategoryId ? { ticketCategoryId: new mongoose.Types.ObjectId(String(ticketCategoryId)) } : {}),
+        ...(excludeUserId ? { userId: { $ne: new mongoose.Types.ObjectId(String(excludeUserId)) } } : {}),
+      },
+    },
+    { $group: { _id: null, quantity: { $sum: "$quantity" } } },
+  ]);
+  return Number(rows[0]?.quantity || 0);
+};
+
+const heldTicketsMap = async ({ eventIds = null, eventId = null, by }) => {
+  const rows = await TicketHold.aggregate([
+    {
+      $match: {
+        ...activeHoldMatch(),
+        ...(eventId ? { eventId: new mongoose.Types.ObjectId(String(eventId)) } : { eventId: { $in: eventIds } }),
+        ...(by === "category" ? { ticketCategoryId: { $ne: null } } : {}),
+      },
+    },
+    { $group: { _id: by === "category" ? "$ticketCategoryId" : "$eventId", quantity: { $sum: "$quantity" } } },
+  ]);
+  return new Map(rows.map((row) => [String(row._id), Number(row.quantity || 0)]));
+};
+
 const getTicketCategoryStatsMap = async (eventId) => {
   const pendingCutoff = new Date(Date.now() - 30 * 60 * 1000);
   const rows = await EventTicket.aggregate([
@@ -707,7 +753,10 @@ const getTicketCategoryStatsMap = async (eventId) => {
     { $group: { _id: "$ticketCategoryId", reserved: { $sum: "$quantity" } } },
   ]);
 
-  return new Map(rows.map((row) => [String(row._id), Number(row.reserved || 0)]));
+  const held = await heldTicketsMap({ eventId, by: "category" });
+  const map = new Map(rows.map((row) => [String(row._id), Number(row.reserved || 0)]));
+  for (const [categoryId, quantity] of held) map.set(categoryId, (map.get(categoryId) || 0) + quantity);
+  return map;
 };
 
 const getEventTicketStatsMap = async (eventIds) => {
@@ -752,6 +801,14 @@ const getEventTicketStatsMap = async (eventIds) => {
       entry.soldTickets += Number(row.quantity || 0);
     }
 
+    map.set(eventId, entry);
+  }
+
+  /* Held tickets read as pending: set aside, not sold. */
+  const held = await heldTicketsMap({ eventIds, by: "event" });
+  for (const [eventId, quantity] of held) {
+    const entry = map.get(eventId) || { soldTickets: 0, pendingTickets: 0 };
+    entry.pendingTickets += quantity;
     map.set(eventId, entry);
   }
 
@@ -1703,6 +1760,47 @@ const listMyEvents = async ({
   };
 };
 
+/* The populate every event card needs, so lists built outside this file
+   come back in the same shape as the feed. */
+const EVENT_CARD_POPULATE = [
+  { path: "organizerUserId", select: "fullName email avatarUrl title verificationBadge" },
+  { path: "workspaceId", select: "name slug" },
+  {
+    path: "eventCenterId",
+    select: "name latitude longitude verified successfulEventsCount usageCount verifiedAt",
+  },
+];
+
+/** Events (populated with EVENT_CARD_POPULATE) as the cards the app shows. */
+const presentEventCards = async ({ events, actorUserId }) => {
+  const now = new Date();
+  const eventIds = events.map((event) => event._id);
+  const organizerIds = events.map((event) => toIdString(event.organizerUserId));
+  const [statsMap, ratingsMap, organizerBadgeMap, followingInterestMap] =
+    await Promise.all([
+      getEventTicketStatsMap(eventIds),
+      getEventRatingsSummaryMap(eventIds, actorUserId),
+      getOrganizerVerificationMap(organizerIds),
+      getFollowingInterestMap({ eventIds, actorUserId }),
+    ]);
+
+  return events.map((event) =>
+    mapEventForResponse({
+      event,
+      occurrence: resolveOccurrenceWindow(event, now) || {
+        startsAt: new Date(event.startsAt),
+        endsAt: new Date(event.endsAt),
+      },
+      stats: statsMap.get(String(event._id)),
+      ratings: ratingsMap.get(String(event._id)),
+      myTicket: null,
+      organizerBadge: organizerBadgeMap.get(toIdString(event.organizerUserId)),
+      followingInterestCount: followingInterestMap.get(String(event._id)) || 0,
+      now,
+    }),
+  );
+};
+
 const ensureEventCanBeViewedBy = async (event, actorUserId) => {
   if (
     event.status === "published" ||
@@ -2558,7 +2656,7 @@ const expireAcceptedResaleOffer = async ({ ticket, now = new Date() }) => {
       message:
         "The buyer did not complete payment in time. Your ticket is live again.",
       data: {
-        target: "ticket-resale",
+        target: "ticket-resale-seller",
         ticketId: String(ticket._id),
         eventId: toIdString(ticket.eventId),
       },
@@ -3794,6 +3892,16 @@ const listTicketUpgradeOptions = async ({ ticketId, actorUserId }) => {
       const reserved = await countReservedTickets(event._id, category._id);
       const released = Number(category.quantity || 0);
       const isCurrent = String(category._id) === String(ticket.ticketCategoryId);
+      /* Priced by the same call initializeTicketUpgrade charges with, so the
+         amount on the button is the amount taken, fee included. */
+      const charge =
+        difference > 0
+          ? computePrimaryTicketPricing({
+              baseUnitPriceNaira: difference,
+              quantity,
+              ...feeConfig,
+            })
+          : null;
 
       return {
         _id: String(category._id),
@@ -3804,6 +3912,9 @@ const listTicketUpgradeOptions = async ({ ticketId, actorUserId }) => {
         soldOut: reserved + quantity > released,
         onSale: availability.onSale,
         differenceNaira: difference > 0 ? difference * quantity : 0,
+        serviceFeeNaira:
+          charge && charge.feeMode === "passed_to_attendee" ? charge.totalVeraFeeNaira : 0,
+        checkoutNaira: charge ? charge.totalCheckoutNaira : 0,
         /* One flag the client can trust rather than re-deriving four rules. */
         upgradable:
           !isCurrent &&
@@ -4395,6 +4506,8 @@ const countReservedTickets = async (
   eventId,
   ticketCategoryId = null,
   salePhase = null,
+  /* The buyer: their own hold mustn't stop them buying what they're holding. */
+  excludeHoldsOfUserId = null,
 ) => {
   const pendingCutoff = new Date(Date.now() - 30 * 60 * 1000);
 
@@ -4428,7 +4541,9 @@ const countReservedTickets = async (
     },
   ]);
 
-  return Number(rows[0]?.quantity || 0);
+  /* Holds are main-sale only, so presale counts leave them out. */
+  const held = salePhase ? 0 : await sumHeldTickets({ eventId, ticketCategoryId, excludeUserId: excludeHoldsOfUserId });
+  return Number(rows[0]?.quantity || 0) + held;
 };
 
 const initializeTicketPurchase = async ({
@@ -4521,6 +4636,8 @@ const initializeTicketPurchase = async ({
     : await countReservedTickets(
         event._id,
         selectedCategory ? String(selectedCategory._id) : null,
+        null,
+        actorUserId,
       );
 
   if (isPresalePurchase) {
@@ -4782,6 +4899,12 @@ const initializeTicketPurchase = async ({
   });
 
   const primaryTicket = issuedTickets[0];
+
+  /* The pending tickets now hold the stock, so the buyer's own hold has done its job. */
+  await TicketHold.updateMany(
+    { userId: actorUserId, eventId: event._id, kind: "primary", status: "active" },
+    { $set: { status: "converted" } },
+  );
 
   /* Held, not spent: a code is only used up once the payment settles, so an
      abandoned checkout hands it back. */
@@ -6057,6 +6180,55 @@ const verifyTicketByCode = async ({ code, eventId, workspaceId }) => {
   };
 };
 
+/**
+ * What the Tickets tab shows on a row, worked out once here so the app
+ * doesn't need a request per ticket or its own copy of these rules.
+ *
+ *   walletState  the one label the row leads with
+ *   canUpgrade   a higher tier is on sale and the event hasn't started.
+ *                A hint only: the ticket screen confirms with the real
+ *                upgrade options (remaining stock, sold-out tiers).
+ *   openBidsCount  open offers on a ticket listed for resale
+ */
+const describeTicketForWallet = ({ ticket, now, openBidsCount = 0 }) => {
+  const event =
+    ticket.eventId && typeof ticket.eventId === "object" ? ticket.eventId : null;
+  const startsAt = event?.nextOccurrenceAt || event?.startsAt;
+  const endsAt = event?.nextOccurrenceEndsAt || event?.endsAt;
+  const started = startsAt ? new Date(startsAt) <= now : false;
+  const ended = endsAt ? new Date(endsAt) <= now : false;
+  const listed = Boolean(ticket.resaleStatus && ticket.resaleStatus !== "none");
+
+  let walletState = "active";
+
+  if (ticket.status === "pending") {
+    walletState = "pending";
+  } else if (ticket.status === "refunded") {
+    walletState = "refunded";
+  } else if (listed) {
+    walletState = "listed";
+  } else if (ended && ["paid", "used"].includes(ticket.status) && !event?.myRating) {
+    walletState = "to_rate";
+  } else if (ticket.status === "used") {
+    walletState = "attended";
+  }
+
+  const paid = basePaidPerTicket(ticket);
+  const canUpgrade =
+    ticket.status === "paid" &&
+    !listed &&
+    !started &&
+    event?.status === "published" &&
+    (event?.ticketCategories || []).some(
+      (category) =>
+        String(category._id) !== String(ticket.ticketCategoryId) &&
+        Number(category.priceNaira || 0) > paid &&
+        resolveTicketCategoryAvailability(category, now).onSale,
+    );
+
+  return { walletState, canUpgrade, openBidsCount };
+};
+
 const listMyTickets = async ({
   actorUserId,
   page = 1,
@@ -6084,6 +6256,8 @@ const listMyTickets = async ({
     }
   } else if (status === "all") {
     query.status = { $in: ["paid", "used", "refunded"] };
+  } else if (status === "wallet") {
+    query.status = { $in: ["pending", "paid", "used", "refunded"] };
   } else {
     query.status = status;
   }
@@ -6123,7 +6297,7 @@ const listMyTickets = async ({
       .populate({
         path: "eventId",
         select:
-          "organizerUserId name imageUrl address latitude longitude geofenceRadiusMeters startsAt endsAt timezone isPaid platformFeePercent feeMode ticketPriceNaira currency expectedTickets recurrence status createdAt updatedAt",
+          "organizerUserId name imageUrl address state latitude longitude geofenceRadiusMeters startsAt endsAt timezone isPaid platformFeePercent feeMode ticketPriceNaira currency expectedTickets recurrence status ticketCategories createdAt updatedAt",
         populate: {
           path: "organizerUserId",
           select: "fullName email avatarUrl title verificationBadge",
@@ -6185,14 +6359,42 @@ const listMyTickets = async ({
     normalizedItems.map((ticket) => ticket._id),
   );
 
+  /* Open bids for every listed ticket on the page, in one grouped query
+     rather than one count per row. */
+  const listedIds = normalizedItems
+    .filter((ticket) => ticket.resaleStatus && ticket.resaleStatus !== "none")
+    .map((ticket) => ticket._id);
+  const openBidsByTicket = new Map(
+    listedIds.length
+      ? (
+          await TicketResaleBid.aggregate([
+            { $match: { ticketId: { $in: listedIds }, status: "open" } },
+            { $group: { _id: "$ticketId", count: { $sum: 1 } } },
+          ])
+        ).map((row) => [String(row._id), row.count])
+      : [],
+  );
+
   return {
     items: normalizedItems.map((ticket) => {
       const addOns = addOnsByTicket.get(String(ticket._id)) || [];
+      const walletFields = describeTicketForWallet({
+        ticket,
+        now,
+        openBidsCount: openBidsByTicket.get(String(ticket._id)) || 0,
+      });
+
+      /* Tier prices were only needed to work out canUpgrade; the list
+         doesn't need to carry them. */
+      if (ticket.eventId && typeof ticket.eventId === "object") {
+        delete ticket.eventId.ticketCategories;
+      }
 
       return withClientTicketIdentity(
         Object.assign(ticket, {
           addOns,
           addOnSummary: addOns.length ? addOnService.summariseRows(addOns) : null,
+          ...walletFields,
         }),
       );
     }),
@@ -6369,8 +6571,29 @@ const getTicketById = async ({ ticketId, actorUserId }) => {
     };
   }
 
+  /* The owner's own send in progress, so the ticket screen can show it. */
+  let pendingTransfer = null;
+  if (isBuyer) {
+    const transfer = await TicketTransfer.findOne({
+      ticketId: ticket._id,
+      status: "pending",
+      expiresAt: { $gt: new Date() },
+    }).populate("toUserId", "fullName handle");
+    if (transfer) {
+      pendingTransfer = {
+        _id: String(transfer._id),
+        toName: transfer.toUserId?.fullName || "",
+        toHandle: transfer.toUserId?.handle || "",
+        toEmail: transfer.toEmail || "",
+        expiresAt: transfer.expiresAt,
+        createdAt: transfer.createdAt,
+      };
+    }
+  }
+
   return Object.assign(plain, {
     addOns: addOns.map((row) => row.toObject()),
+    pendingTransfer,
   });
 };
 
@@ -6444,6 +6667,130 @@ const listEventResaleMarketplace = async ({
   };
 };
 
+/**
+ * The most a holder may ask for `quantity` of their ticket.
+ *
+ * Capped at the event's markup over what was paid. A ticket bought with a
+ * promo code may be resold at what its holder paid, but never above the
+ * price everyone else pays: the discount was the organizer's gift to that
+ * buyer, not a margin to sell on. Full-price tickets keep the event's markup.
+ */
+const computeResalePriceCeiling = ({ ticket, policy, quantity }) => {
+  const baseCostNaira = Math.max(
+    1,
+    Math.round(Number(ticket.unitPriceNaira || 0) * quantity),
+  );
+  const markupCeiling = Math.round(
+    baseCostNaira * (1 + policy.maxMarkupPercent / 100),
+  );
+  const seatDiscountNaira = Math.max(
+    0,
+    Math.round(
+      Number(ticket?.paymentMetadata?.pricingBreakdown?.promoDiscountNaira || 0),
+    ),
+  );
+  const fullPriceCeiling =
+    seatDiscountNaira > 0
+      ? Math.round(
+          (Math.max(0, Math.round(Number(ticket.unitPriceNaira || 0))) +
+            seatDiscountNaira) *
+            quantity,
+        )
+      : markupCeiling;
+
+  return Math.max(
+    1,
+    Math.min(markupCeiling, Math.max(baseCostNaira, fullPriceCeiling)),
+  );
+};
+
+/**
+ * Everything the resell screen shows, worked out here so the phone never
+ * guesses: whether this ticket can be listed (and why not), the price cap
+ * for each quantity, whether the event takes offers, and how long a buyer
+ * has to pay once an offer is accepted.
+ */
+const getTicketResaleOptions = async ({ ticketId, actorUserId }) => {
+  let ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  ticket = await expireAcceptedResaleOffer({ ticket });
+
+  const event =
+    ticket.eventId && typeof ticket.eventId === "object"
+      ? ticket.eventId
+      : await Event.findById(ticket.eventId);
+
+  if (!event) {
+    throw new ApiError(404, "Event not found");
+  }
+
+  const policy = normalizeEventResalePolicy(event);
+  const payoutAccount = await PayoutAccount.findOne({ organizerUserId: actorUserId })
+    .select("paystackRecipientCode kycStatus")
+    .lean();
+  let blocked = null;
+
+  try {
+    await ensureTicketEligibleForResale({ ticket, actorUserId });
+  } catch (error) {
+    if (!(error instanceof ApiError)) {
+      throw error;
+    }
+    blocked = { message: error.message, code: error.code || null };
+  }
+
+  const heldQuantity = Math.max(1, Number(ticket.quantity || 1));
+  const faceValuePerTicketNaira = Math.max(
+    0,
+    Math.round(Number(ticket.unitPriceNaira || 0)),
+  );
+  const priceCaps = Array.from({ length: heldQuantity }, (_, index) => {
+    const quantity = index + 1;
+    return {
+      quantity,
+      faceValueNaira: faceValuePerTicketNaira * quantity,
+      maxPriceNaira: computeResalePriceCeiling({ ticket, policy, quantity }),
+    };
+  });
+
+  const isListed =
+    ticket.resaleStatus === "listed" || ticket.resaleStatus === "offer-accepted";
+  const formatted = isListed
+    ? await formatResaleTicketForResponse(ticket, actorUserId)
+    : null;
+
+  return {
+    canList: !blocked && ticket.resaleStatus !== "offer-accepted",
+    blockedReason:
+      blocked?.message ||
+      (ticket.resaleStatus === "offer-accepted"
+        ? "You accepted an offer. The buyer has until their payment window closes."
+        : null),
+    blockedCode: blocked?.code || null,
+    heldQuantity,
+    faceValuePerTicketNaira,
+    priceCaps,
+    maxMarkupPercent: policy.maxMarkupPercent,
+    offersAllowedByEvent: policy.allowBids,
+    paymentWindowHours: policy.bidWindowHours,
+    sellerPayoutsLive: true,
+    /* No fee: the seller gets the full price, this long after the event. */
+    payoutDelayHours: env.resalePayoutDelayHours,
+    payoutAccountOnFile: Boolean(payoutAccount?.paystackRecipientCode && payoutAccount.kycStatus === "verified"),
+    listing: formatted
+      ? {
+          status: formatted.resaleStatus,
+          priceNaira: Number(formatted.resalePriceNaira || 0),
+          quantity: Number(formatted.resaleQuantity || 1),
+          allowBids: Boolean(formatted.resaleAllowBids),
+          listedAt: formatted.resaleListedAt || null,
+          openBidsCount: formatted.openBidsCount,
+          highestBidNaira: formatted.highestBidNaira,
+          acceptedBidExpiresAt: formatted.acceptedBidExpiresAt || null,
+        }
+      : null,
+  };
+};
+
 const createTicketResale = async ({ ticketId, actorUserId, payload }) => {
   let ticket = await ensureOwnedTicket({ ticketId, actorUserId });
   const { event, policy } = await ensureTicketEligibleForResale({
@@ -6457,6 +6804,17 @@ const createTicketResale = async ({ ticketId, actorUserId, payload }) => {
     throw new ApiError(409, "This ticket already has an accepted buyer");
   }
 
+  if (
+    await TicketTransfer.exists({ ticketId: ticket._id, status: "pending", expiresAt: { $gt: new Date() } })
+  ) {
+    throw new ApiError(
+      409,
+      "You're sending this ticket to someone. Cancel that before reselling it.",
+      null,
+      "RESALE_WHILE_SENDING",
+    );
+  }
+
   const priceNaira = Math.max(1, Math.round(Number(payload.priceNaira || 0)));
   const requestedQuantity = Math.max(1, Number(payload.quantity || 1));
 
@@ -6465,36 +6823,11 @@ const createTicketResale = async ({ ticketId, actorUserId, payload }) => {
   }
 
   const resaleQuantity = requestedQuantity;
-  const baseCostNaira = Math.max(
-    1,
-    Math.round(Number(ticket.unitPriceNaira || 0) * resaleQuantity),
-  );
-  const markupCeiling = Math.round(
-    baseCostNaira * (1 + policy.maxMarkupPercent / 100),
-  );
-
-  /* A ticket bought with a promo code may be resold at what its holder paid,
-     but never above the price everyone else pays: the discount was the
-     organizer's gift to that buyer, not a margin to sell on. Tickets bought
-     at full price are untouched by this and keep the event's own markup. */
-  const seatDiscountNaira = Math.max(
-    0,
-    Math.round(
-      Number(ticket?.paymentMetadata?.pricingBreakdown?.promoDiscountNaira || 0),
-    ),
-  );
-  const fullPriceCeiling =
-    seatDiscountNaira > 0
-      ? Math.round(
-          (Math.max(0, Math.round(Number(ticket.unitPriceNaira || 0))) +
-            seatDiscountNaira) *
-            resaleQuantity,
-        )
-      : markupCeiling;
-  const maxAllowedPrice = Math.max(
-    1,
-    Math.min(markupCeiling, Math.max(baseCostNaira, fullPriceCeiling)),
-  );
+  const maxAllowedPrice = computeResalePriceCeiling({
+    ticket,
+    policy,
+    quantity: resaleQuantity,
+  });
 
   if (priceNaira > maxAllowedPrice) {
     throw new ApiError(
@@ -6503,8 +6836,11 @@ const createTicketResale = async ({ ticketId, actorUserId, payload }) => {
     );
   }
 
+  /* The organizer's rule wins: a seller may switch offers off, but cannot
+     switch them on for an event that does not take them. */
   const allowBids =
-    payload.allowBids === undefined ? policy.allowBids : Boolean(payload.allowBids);
+    policy.allowBids &&
+    (payload.allowBids === undefined ? true : Boolean(payload.allowBids));
   const now = new Date();
 
   await TicketResaleBid.updateMany(
@@ -6543,7 +6879,20 @@ const createTicketResale = async ({ ticketId, actorUserId, payload }) => {
 };
 
 const cancelTicketResale = async ({ ticketId, actorUserId }) => {
-  const ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  let ticket = await ensureOwnedTicket({ ticketId, actorUserId });
+  ticket = await expireAcceptedResaleOffer({ ticket });
+
+  /* A buyer may be mid-payment. Taking the listing down now would leave them
+     charged for a ticket that can no longer be issued. */
+  if (ticket.resaleStatus === "offer-accepted") {
+    throw new ApiError(
+      409,
+      "A buyer is paying for this ticket. You can take it down if their payment window closes.",
+      null,
+      "RESALE_BUYER_PAYING",
+    );
+  }
+
   const now = new Date();
 
   await TicketResaleBid.updateMany(
@@ -6693,7 +7042,7 @@ const createTicketResaleBid = async ({ ticketId, actorUserId, payload }) => {
       title: "New bid on your ticket",
       message: `${bid.bidderUserId?.fullName || "A buyer"} offered ₦${amountNaira.toLocaleString()}.`,
       data: {
-        target: "ticket-resale",
+        target: "ticket-resale-seller",
         ticketId: String(ticket._id),
         eventId: toIdString(ticket.eventId),
       },
@@ -6956,167 +7305,222 @@ const purchaseResaleTicket = async ({
   const now = new Date();
   let transferredTicketId = ticket._id;
 
-  if (listedQuantity < Number(ticket.quantity || 1)) {
-    const transferredTicketCode = await buildTicketCode();
-    const transferredUnitPrice = Math.max(
-      0,
-      Math.round(saleAmountNaira / listedQuantity),
-    );
+  /* One sale per payment, claimed before anything moves: the verify call and
+     the Paystack webhook can both arrive here for the same payment, and only
+     one of them may issue the ticket. */
+  let resaleSale = null;
 
-    const createdTicket = await EventTicket.create({
-      eventId: ticket.eventId?._id || ticket.eventId,
-      workspaceId: ticket.workspaceId || null,
-      organizerUserId: ticket.organizerUserId?._id || ticket.organizerUserId,
+  if (isPaymentBackedTransfer && normalizedPaymentReference) {
+    resaleSale = await claimResaleSale({
+      event,
+      eventEndsAt: resolveOccurrenceWindow(event, now)?.endsAt || event.endsAt,
+      sourceTicket: ticket,
       buyerUserId: buyer._id,
       quantity: listedQuantity,
-      ticketCategoryId: ticket.ticketCategoryId || null,
-      ticketCategoryName: ticket.ticketCategoryName || "",
-      unitPriceNaira: transferredUnitPrice,
-      totalPriceNaira: saleAmountNaira,
-      currency: ticket.currency || "NGN",
-      status: "paid",
-      paymentProvider: isPaymentBackedTransfer ? "paystack" : "none",
-      paymentReference: normalizedPaymentReference || null,
-      paymentMetadata: {
-        ...(ticket.paymentMetadata || {}),
-        resale: {
-          previousBuyerUserId: sellerUserId,
-          soldToUserId: String(buyer._id),
-          soldAt: now,
-          amountNaira: saleAmountNaira,
-          sourceTicketId: String(ticket._id),
-        },
-        paymentAttemptId: paymentAttemptId ? String(paymentAttemptId) : undefined,
-        verifyPayload: paymentData || undefined,
-      },
-      attendeeName: String(buyer.fullName || "").trim(),
-      attendeeEmail: String(buyer.email || "").trim().toLowerCase(),
-      ticketCode: transferredTicketCode,
-      barcodeValue: ticket.ticketCategoryId
-        ? JSON.stringify({
-            provider: "vera",
-            ticketCode: transferredTicketCode,
-            eventId: String(ticket.eventId?._id || ticket.eventId),
-            ticketCategoryId: String(ticket.ticketCategoryId),
-          })
-        : transferredTicketCode,
-      paidAt: now,
-      verifiedAt: now,
-      lastTransferredAt: now,
+      saleAmountNaira,
+      paymentReference: normalizedPaymentReference,
+      paymentAttemptId,
     });
 
-    transferredTicketId = createdTicket._id;
-
-    /* Add-ons follow the ticket only where the organizer said they should.
-       A sized shirt stays with the person who chose the size, so the seller
-       is refunded for it rather than handing it to a stranger. */
-    await refundTicketAddOns({
-      ticketId: ticket._id,
-      reason: "Ticket resold",
-      onlyNonTransferable: true,
-    });
-
-    await EventAddOnPurchase.updateMany(
-      { ticketId: ticket._id, status: { $in: ["paid", "redeemed"] } },
-      { $set: { ticketId: createdTicket._id, buyerUserId: buyer._id } },
-    );
-
-    await EventTicket.updateOne(
-      { _id: ticket._id },
-      {
-        $set: {
-          quantity: Math.max(1, Number(ticket.quantity || 1) - listedQuantity),
-          totalPriceNaira:
-            Math.max(1, Number(ticket.quantity || 1) - listedQuantity) *
-            Math.max(0, Number(ticket.unitPriceNaira || 0)),
-          paymentMetadata: {
-            ...(ticket.paymentMetadata || {}),
-            resale: {
-              previousBuyerUserId: sellerUserId,
-              soldToUserId: String(buyer._id),
-              soldAt: now,
-              amountNaira: saleAmountNaira,
-              splitQuantity: listedQuantity,
-              transferredTicketId: String(createdTicket._id),
-            },
-          },
-          lastTransferredAt: now,
-          resaleStatus: "none",
-          resalePriceNaira: null,
-          resaleQuantity: null,
-          resaleAllowBids: false,
-          resaleListedAt: null,
-          acceptedBidId: null,
-          acceptedBidExpiresAt: null,
-          resaleBuyerUserId: null,
-        },
-      },
-    );
-  } else {
-    await EventTicket.updateOne(
-      { _id: ticket._id },
-      {
-        $set: {
-          buyerUserId: buyer._id,
-          attendeeName: String(buyer.fullName || "").trim(),
-          attendeeEmail: String(buyer.email || "").trim().toLowerCase(),
-          unitPriceNaira: Math.max(0, Math.round(saleAmountNaira / listedQuantity)),
-          totalPriceNaira: saleAmountNaira,
-          paymentProvider: isPaymentBackedTransfer ? "paystack" : "none",
-          paymentReference: normalizedPaymentReference || null,
-          paymentAuthorizationUrl: "",
-          paymentAccessCode: "",
-          paidAt: now,
-          verifiedAt: now,
-          paymentMetadata: {
-            ...(ticket.paymentMetadata || {}),
-            resale: {
-              previousBuyerUserId: sellerUserId,
-              soldToUserId: String(buyer._id),
-              soldAt: now,
-              amountNaira: saleAmountNaira,
-            },
-            paymentAttemptId: paymentAttemptId ? String(paymentAttemptId) : undefined,
-            verifyPayload: paymentData || undefined,
-          },
-          lastTransferredAt: now,
-          resaleStatus: "none",
-          resalePriceNaira: null,
-          resaleQuantity: null,
-          resaleAllowBids: false,
-          resaleListedAt: null,
-          acceptedBidId: null,
-          acceptedBidExpiresAt: null,
-          resaleBuyerUserId: null,
-        },
-      },
-    );
+    if (!resaleSale) {
+      throw new ApiError(
+        409,
+        "This payment is already being processed",
+        null,
+        "RESALE_ALREADY_PROCESSING",
+      );
+    }
   }
 
-  await TicketResaleBid.updateMany(
-    {
-      ticketId: ticket._id,
-      status: "open",
-    },
-    {
-      $set: {
-        status: "rejected",
-        respondedAt: now,
-      },
-    },
-  );
+  try {
+    if (listedQuantity < Number(ticket.quantity || 1)) {
+      const transferredTicketCode = await buildTicketCode();
+      const transferredUnitPrice = Math.max(
+        0,
+        Math.round(saleAmountNaira / listedQuantity),
+      );
 
-  if (acceptedBid) {
-    await TicketResaleBid.updateOne(
-      { _id: acceptedBid._id },
+      const createdTicket = await EventTicket.create({
+        eventId: ticket.eventId?._id || ticket.eventId,
+        workspaceId: ticket.workspaceId || null,
+        organizerUserId: ticket.organizerUserId?._id || ticket.organizerUserId,
+        buyerUserId: buyer._id,
+        quantity: listedQuantity,
+        ticketCategoryId: ticket.ticketCategoryId || null,
+        ticketCategoryName: ticket.ticketCategoryName || "",
+        unitPriceNaira: transferredUnitPrice,
+        totalPriceNaira: saleAmountNaira,
+        currency: ticket.currency || "NGN",
+        status: "paid",
+        paymentProvider: isPaymentBackedTransfer ? "paystack" : "none",
+        paymentReference: normalizedPaymentReference || null,
+        paymentMetadata: {
+          ...(ticket.paymentMetadata || {}),
+          resale: {
+            previousBuyerUserId: sellerUserId,
+            soldToUserId: String(buyer._id),
+            soldAt: now,
+            amountNaira: saleAmountNaira,
+            sourceTicketId: String(ticket._id),
+          },
+          paymentAttemptId: paymentAttemptId ? String(paymentAttemptId) : undefined,
+          verifyPayload: paymentData || undefined,
+        },
+        attendeeName: String(buyer.fullName || "").trim(),
+        attendeeEmail: String(buyer.email || "").trim().toLowerCase(),
+        ticketCode: transferredTicketCode,
+        barcodeValue: ticket.ticketCategoryId
+          ? JSON.stringify({
+              provider: "vera",
+              ticketCode: transferredTicketCode,
+              eventId: String(ticket.eventId?._id || ticket.eventId),
+              ticketCategoryId: String(ticket.ticketCategoryId),
+            })
+          : transferredTicketCode,
+        paidAt: now,
+        verifiedAt: now,
+        lastTransferredAt: now,
+      });
+
+      transferredTicketId = createdTicket._id;
+
+      /* Add-ons follow the ticket only where the organizer said they should.
+         A sized shirt stays with the person who chose the size, so the seller
+         is refunded for it rather than handing it to a stranger. */
+      await refundTicketAddOns({
+        ticketId: ticket._id,
+        reason: "Ticket resold",
+        onlyNonTransferable: true,
+      });
+
+      await EventAddOnPurchase.updateMany(
+        { ticketId: ticket._id, status: { $in: ["paid", "redeemed"] } },
+        { $set: { ticketId: createdTicket._id, buyerUserId: buyer._id } },
+      );
+
+      await EventTicket.updateOne(
+        { _id: ticket._id },
+        {
+          $set: {
+            quantity: Math.max(1, Number(ticket.quantity || 1) - listedQuantity),
+            totalPriceNaira:
+              Math.max(1, Number(ticket.quantity || 1) - listedQuantity) *
+              Math.max(0, Number(ticket.unitPriceNaira || 0)),
+            paymentMetadata: {
+              ...(ticket.paymentMetadata || {}),
+              resale: {
+                previousBuyerUserId: sellerUserId,
+                soldToUserId: String(buyer._id),
+                soldAt: now,
+                amountNaira: saleAmountNaira,
+                splitQuantity: listedQuantity,
+                transferredTicketId: String(createdTicket._id),
+              },
+            },
+            lastTransferredAt: now,
+            resaleStatus: "none",
+            resalePriceNaira: null,
+            resaleQuantity: null,
+            resaleAllowBids: false,
+            resaleListedAt: null,
+            acceptedBidId: null,
+            acceptedBidExpiresAt: null,
+            resaleBuyerUserId: null,
+          },
+        },
+      );
+    } else {
+      /* A fresh code for the new holder, as a split sale already gets: the
+         seller has seen (and may have screenshotted) the old one, so it must
+         stop working the moment the ticket changes hands. */
+      const reissuedTicketCode = await buildTicketCode();
+
+      await EventTicket.updateOne(
+        { _id: ticket._id },
+        {
+          $set: {
+            ticketCode: reissuedTicketCode,
+            barcodeValue: ticket.ticketCategoryId
+              ? JSON.stringify({
+                  provider: "vera",
+                  ticketCode: reissuedTicketCode,
+                  eventId: String(ticket.eventId?._id || ticket.eventId),
+                  ticketCategoryId: String(ticket.ticketCategoryId),
+                })
+              : reissuedTicketCode,
+            buyerUserId: buyer._id,
+            attendeeName: String(buyer.fullName || "").trim(),
+            attendeeEmail: String(buyer.email || "").trim().toLowerCase(),
+            unitPriceNaira: Math.max(0, Math.round(saleAmountNaira / listedQuantity)),
+            totalPriceNaira: saleAmountNaira,
+            paymentProvider: isPaymentBackedTransfer ? "paystack" : "none",
+            paymentReference: normalizedPaymentReference || null,
+            paymentAuthorizationUrl: "",
+            paymentAccessCode: "",
+            paidAt: now,
+            verifiedAt: now,
+            paymentMetadata: {
+              ...(ticket.paymentMetadata || {}),
+              resale: {
+                previousBuyerUserId: sellerUserId,
+                soldToUserId: String(buyer._id),
+                soldAt: now,
+                amountNaira: saleAmountNaira,
+              },
+              paymentAttemptId: paymentAttemptId ? String(paymentAttemptId) : undefined,
+              verifyPayload: paymentData || undefined,
+            },
+            lastTransferredAt: now,
+            resaleStatus: "none",
+            resalePriceNaira: null,
+            resaleQuantity: null,
+            resaleAllowBids: false,
+            resaleListedAt: null,
+            acceptedBidId: null,
+            acceptedBidExpiresAt: null,
+            resaleBuyerUserId: null,
+          },
+        },
+      );
+    }
+
+    await TicketResaleBid.updateMany(
+      {
+        ticketId: ticket._id,
+        status: "open",
+      },
       {
         $set: {
-          status: "paid",
+          status: "rejected",
           respondedAt: now,
-          paidAt: now,
         },
       },
     );
+
+    if (acceptedBid) {
+      await TicketResaleBid.updateOne(
+        { _id: acceptedBid._id },
+        {
+          $set: {
+            status: "paid",
+            respondedAt: now,
+            paidAt: now,
+          },
+        },
+      );
+    }
+
+  } catch (error) {
+    /* Nothing was issued, so the claim is released and this payment can be
+       retried or refunded. */
+    if (resaleSale) {
+      await ResaleSale.deleteOne({ _id: resaleSale._id });
+    }
+    throw error;
+  }
+
+  if (resaleSale) {
+    await ResaleSale.updateOne({ _id: resaleSale._id }, { $set: { ticketId: transferredTicketId } });
   }
 
   const updated = await populateResaleTicketQuery(
@@ -7128,11 +7532,13 @@ const purchaseResaleTicket = async ({
       userId: sellerUserId,
       type: "ticket.resale.completed",
       title: "Ticket resold",
-      message: `Your ticket was transferred for ₦${saleAmountNaira.toLocaleString()}.`,
+      message: `Your ticket sold for ₦${saleAmountNaira.toLocaleString()}. It's paid to your bank ${env.resalePayoutDelayHours} hours after the event.`,
       data: {
-        target: "ticket-resale",
+        target: "ticket-resale-sold",
         ticketId: String(ticket._id),
         eventId: toIdString(ticket.eventId),
+        amountNaira: saleAmountNaira,
+        quantity: listedQuantity,
       },
       push: true,
     }).catch(() => null);
@@ -7163,6 +7569,18 @@ const initializeResalePurchase = async ({
 
   if (!ticket) {
     throw new ApiError(404, "Ticket not found");
+  }
+
+  /* Someone else is holding this listing for a few minutes. */
+  const heldByOther = await TicketHold.exists({
+    kind: "resale",
+    resaleTicketId: ticket._id,
+    status: "active",
+    expiresAt: { $gt: new Date() },
+    userId: { $ne: new mongoose.Types.ObjectId(String(actorUserId)) },
+  });
+  if (heldByOther) {
+    throw new ApiError(409, "Someone is holding this ticket for a few minutes. Try again shortly.", null, "TICKET_HELD");
   }
 
   ticket = await expireAcceptedResaleOffer({ ticket });
@@ -7351,6 +7769,47 @@ const initializeResalePurchase = async ({
   }
 };
 
+/**
+ * A buyer paid for a resale that could not be issued (the listing changed or
+ * the ticket was used while they were paying). Their money goes straight
+ * back, unless the other path (verify or webhook) already issued it.
+ */
+const refundUnissuedResalePayment = async ({ paymentAttempt, paymentReference, paymentData, reason }) => {
+  const issued =
+    (await ResaleSale.exists({ resalePaymentReference: paymentReference })) ||
+    (await EventTicket.exists({ paymentReference }));
+
+  if (issued) {
+    return { issued: true, refunded: false };
+  }
+
+  const amountKobo = Math.round(Number(paymentData?.amount || paymentAttempt.amountKobo || 0));
+
+  try {
+    await returnPaystackPayment({ reference: paymentReference, amountKobo });
+  } catch (error) {
+    await markPaymentAttemptFulfillmentFailed({
+      paymentAttempt,
+      paymentData,
+      reason: `${reason}. Automatic refund failed: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    throw new ApiError(
+      502,
+      "This ticket was no longer available and we couldn't refund you automatically. Support has the details.",
+      null,
+      "RESALE_REFUND_FAILED",
+    );
+  }
+
+  await markPaymentAttemptFulfillmentFailed({
+    paymentAttempt,
+    paymentData,
+    reason: `${reason}. Payment refunded.`,
+  });
+
+  return { issued: false, refunded: true };
+};
+
 const verifyResalePurchase = async ({
   ticketId,
   actorUserId,
@@ -7439,12 +7898,30 @@ const verifyResalePurchase = async ({
       paymentData,
     });
   } catch (error) {
-    await markPaymentAttemptFulfillmentFailed({
+    /* The webhook is issuing it right now; the app checks again shortly. */
+    if (error instanceof ApiError && error.code === "RESALE_ALREADY_PROCESSING") {
+      throw new ApiError(409, "Your payment is being confirmed", null, "RESALE_ALREADY_PROCESSING");
+    }
+
+    const result = await refundUnissuedResalePayment({
       paymentAttempt,
       paymentData,
+      paymentReference,
       reason: error instanceof Error ? error.message : String(error),
     });
-    throw error;
+
+    if (result.issued) {
+      const issuedTicket = await populateResaleTicketQuery(EventTicket.findOne({ paymentReference }));
+      return { ticket: issuedTicket, paymentStatus: "success", alreadyVerified: true };
+    }
+
+    /* 410, not 409: the app retries 409s, and this will never succeed. */
+    throw new ApiError(
+      410,
+      "This ticket was no longer available, so your payment has been refunded.",
+      null,
+      "RESALE_UNAVAILABLE_REFUNDED",
+    );
   }
 
   await markPaymentAttemptVerified({
@@ -7466,7 +7943,9 @@ const processPaystackWebhookEvent = async (payload) => {
   if (eventName === "transfer.success") {
     const reference = String(payload?.data?.reference || "").trim();
 
-    if (reference) {
+    if (reference && isResalePayoutReference(reference)) {
+      await finalizeResalePayoutSuccess({ paystackReference: reference });
+    } else if (reference) {
       await finalizeWithdrawalSuccess({ paystackReference: reference });
     }
 
@@ -7476,7 +7955,12 @@ const processPaystackWebhookEvent = async (payload) => {
   if (eventName === "transfer.failed" || eventName === "transfer.reversed") {
     const reference = String(payload?.data?.reference || "").trim();
 
-    if (reference) {
+    if (reference && isResalePayoutReference(reference)) {
+      await finalizeResalePayoutFailure({
+        paystackReference: reference,
+        reason: `Paystack reported ${eventName}`,
+      });
+    } else if (reference) {
       await finalizeWithdrawalFailure({
         paystackReference: reference,
         reason: `Paystack reported ${eventName}`,
@@ -7646,15 +8130,38 @@ const processPaystackWebhookEvent = async (payload) => {
     }
 
     if (paymentAttempt.kind === "ticket_resale_purchase") {
-      const transferredTicket = await purchaseResaleTicket({
-        ticketId: String(
-          paymentAttempt.resaleSourceTicketId || paymentAttempt.ticketId || "",
-        ),
-        actorUserId: String(paymentAttempt.buyerUserId || ""),
-        paymentReference,
-        paymentAttemptId: paymentAttempt._id,
-        paymentData,
-      });
+      let transferredTicket;
+
+      try {
+        transferredTicket = await purchaseResaleTicket({
+          ticketId: String(
+            paymentAttempt.resaleSourceTicketId || paymentAttempt.ticketId || "",
+          ),
+          actorUserId: String(paymentAttempt.buyerUserId || ""),
+          paymentReference,
+          paymentAttemptId: paymentAttempt._id,
+          paymentData,
+        });
+      } catch (error) {
+        if (error instanceof ApiError && error.code === "RESALE_ALREADY_PROCESSING") {
+          return { processed: true, event: eventName, reference: paymentReference, alreadyFulfilled: true };
+        }
+
+        const result = await refundUnissuedResalePayment({
+          paymentAttempt,
+          paymentData,
+          paymentReference,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+
+        return {
+          processed: result.issued,
+          event: eventName,
+          kind: "ticket_resale_purchase",
+          reference: paymentReference,
+          reason: result.issued ? "already_issued" : "unavailable_refunded",
+        };
+      }
 
       await markPaymentAttemptVerified({
         paymentAttempt,
@@ -9033,6 +9540,8 @@ const listEventFeed = async ({
 };
 
 module.exports = {
+  EVENT_CARD_POPULATE,
+  presentEventCards,
   createPaymentAttemptForCheckout,
   createEvent,
   searchEventCenters,
@@ -9091,10 +9600,16 @@ module.exports = {
   listMyTickets,
   listOrganizerTicketSales,
   getTicketById,
+  buildTicketCode,
+  buildTicketBarcodeValue,
+  countReservedTickets,
+  resolveTicketSalesAccess,
+  resolveTicketCategoryAvailability,
   reportTicketHolderLocation,
   canUserManageEvent,
   listEventResaleMarketplace,
   createTicketResale,
+  getTicketResaleOptions,
   cancelTicketResale,
   listTicketResaleBids,
   createTicketResaleBid,

@@ -9,6 +9,7 @@ const VendorOrder = require("../models/vendor-order.model");
 const VendorRating = require("../models/vendor-rating.model");
 const ApiError = require("../utils/api-error");
 const env = require("../config/env");
+const { returnPaystackPayment } = require("./payment-refund.service");
 const { computeVendorOrderPricing } = require("../config/vendor-fees");
 const { limitForLevel } = require("../config/vendor-limits");
 const { ADULT_AGE, isAdult } = require("../utils/age");
@@ -19,7 +20,6 @@ const {
   resolveOccurrenceWindow,
 } = require("./event.service");
 const {
-  initiatePaystackRefund,
   verifyPaystackTransaction,
 } = require("./paystack.service");
 const { createNotification } = require("./notification.service");
@@ -1069,8 +1069,8 @@ const cancelOrder = async ({ orderId, actorUserId, reason, byVendor = true }) =>
 
   if (wasPaid && order.paymentReference && env.paystackSecretKey) {
     try {
-      const refund = await initiatePaystackRefund({
-        transactionReference: order.paymentReference,
+      const { refund } = await returnPaystackPayment({
+        reference: order.paymentReference,
         amountKobo: Math.round(order.pricing.totalChargedNaira * 100),
       });
 

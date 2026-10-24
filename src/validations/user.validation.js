@@ -1,4 +1,5 @@
 const { z } = require("zod");
+const { TOPIC_KEYS } = require("../constants/notification-topics");
 
 const workspaceRefRegex = /^([a-fA-F0-9]{24}|[a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const objectIdRegex = /^[a-fA-F0-9]{24}$/;
@@ -14,6 +15,9 @@ const dateQuerySchema = z
 const updateProfileSchema = z
   .object({
     fullName: z.string().trim().min(2).max(120).optional(),
+    /* Shape and availability are checked in the service, which owns the
+       rules; this only bounds the input. */
+    handle: z.string().trim().min(1).max(32).optional(),
     avatarUrl: z.string().trim().url().optional(),
     phoneNumber: z.string().trim().max(32).optional(),
     title: z.string().trim().max(120).optional(),
@@ -52,6 +56,11 @@ const updatePreferencesSchema = z
     themePreference: z.enum(["system", "light", "dark"]).optional(),
     shareActivityWithFollowers: z.boolean().optional(),
     preferredCategoryIds: z.array(objectIdSchema).max(30).optional(),
+    marketingOptIn: z.boolean().optional(),
+    notifications: z
+      .object(Object.fromEntries(TOPIC_KEYS.map((topic) => [topic, z.boolean().optional()])))
+      .strict()
+      .optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one preferences field is required",
@@ -84,9 +93,55 @@ const attendanceReportQuerySchema = z
     },
   );
 
+const handleCheckQuerySchema = z.object({
+  handle: z.string().trim().min(1).max(32),
+});
+
+const handleParamsSchema = z.object({
+  handle: z.string().trim().min(1).max(32),
+});
+
+const userIdParamsSchema = z.object({
+  userId: z.string().regex(objectIdRegex, "Invalid user id"),
+});
+
+const emailChangeRequestSchema = z.object({
+  email: z.string().trim().toLowerCase().email("Enter a real email address").max(254),
+});
+
+const emailChangeConfirmSchema = z.object({
+  code: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit code"),
+});
+
+const deleteAccountSchema = z.object({
+  code: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit code"),
+});
+
+const searchPeopleQuerySchema = z.object({
+  q: z.string().trim().max(60).optional().default(""),
+  limit: z.coerce.number().int().min(1).max(20).optional().default(10),
+});
+
+const recapQuerySchema = z.object({
+  year: z.coerce.number().int().min(2020).max(2100).optional(),
+});
+
+const suggestedHostsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(30).optional().default(12),
+});
+
 module.exports = {
+  handleCheckQuerySchema,
+  suggestedHostsQuerySchema,
   updateProfileSchema,
   updatePasswordSchema,
   updatePreferencesSchema,
   attendanceReportQuerySchema,
+  handleParamsSchema,
+  recapQuerySchema,
+  userIdParamsSchema,
+  emailChangeRequestSchema,
+  emailChangeConfirmSchema,
+  deleteAccountSchema,
+  searchPeopleQuerySchema,
 };

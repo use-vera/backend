@@ -1,4 +1,5 @@
 const bcrypt = require("bcryptjs");
+const { TOPIC_KEYS } = require("../constants/notification-topics");
 const ApiError = require("../utils/api-error");
 const env = require("../config/env");
 const User = require("../models/user.model");
@@ -53,7 +54,145 @@ const normalizePreferences = (preferences = {}) => ({
   preferredCategoryIds: Array.isArray(preferences.preferredCategoryIds)
     ? preferences.preferredCategoryIds.map((id) => String(id))
     : [],
+  marketingOptIn: preferences.marketingOptIn === true,
+  notifications: Object.fromEntries(
+    TOPIC_KEYS.map((topic) => [topic, preferences.notifications?.[topic] !== false]),
+  ),
 });
+
+/* ---------- Handles ---------- */
+
+/* 3–24 of a-z, 0-9, dot, underscore. No leading, trailing or doubled dot,
+   so a handle can never look like a domain or a file path. */
+const HANDLE_PATTERN = /^(?!\.)(?!.*\.\.)(?!.*\.$)[a-z0-9._]{3,24}$/;
+
+/* Names that would let someone pass as Vera itself or as a system account. */
+const RESERVED_HANDLES = new Set([
+  "admin",
+  "administrator",
+  "api",
+  "help",
+  "me",
+  "mod",
+  "moderator",
+  "official",
+  "root",
+  "security",
+  "settings",
+  "support",
+  "system",
+  "team",
+  "vera",
+  "veraapp",
+  "vera.app",
+  "verahq",
+]);
+
+const normalizeHandle = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/^@+/, "")
+    .toLowerCase();
+
+/** Why a handle can't be used, or "" when its shape is fine. */
+const describeHandleProblem = (handle) => {
+  if (!HANDLE_PATTERN.test(handle)) {
+    return "Use 3–24 letters, numbers, dots or underscores.";
+  }
+
+  if (RESERVED_HANDLES.has(handle)) {
+    return "That handle is reserved.";
+  }
+
+  return "";
+};
+
+const buildHandleCandidates = (fullName) => {
+  const parts = String(fullName || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9\s]/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return [];
+  }
+
+  const joined = parts.join("").slice(0, 20);
+  const dotted = parts.join(".").slice(0, 20);
+  const underscored = parts.join("_").slice(0, 20);
+  const suffix = String(Math.floor(10 + Math.random() * 89));
+
+  return [joined, dotted, underscored, `${joined}${suffix}`, `${parts[0]}.vera`]
+    .filter((candidate, index, list) => list.indexOf(candidate) === index)
+    .filter((candidate) => !describeHandleProblem(candidate));
+};
+
+/**
+ * Whether `handle` can be claimed by this user, plus up to three free
+ * alternatives built from their name.
+ */
+const checkHandleAvailability = async ({ userId, handle: rawHandle }) => {
+  const handle = normalizeHandle(rawHandle);
+  const user = await User.findById(userId).select("fullName handle");
+
+  if (!user) {
+    throw new ApiError(404, "User profile not found");
+  }
+
+  const problem = describeHandleProblem(handle);
+  let available = !problem;
+
+  if (available && user.handle !== handle) {
+    available = !(await User.exists({ handle, _id: { $ne: user._id } }));
+  }
+
+  const candidates = buildHandleCandidates(user.fullName).filter(
+    (candidate) => candidate !== handle,
+  );
+  const taken = await User.find({ handle: { $in: candidates } }).distinct(
+    "handle",
+  );
+  const suggestions = candidates
+    .filter((candidate) => !taken.includes(candidate))
+    .slice(0, 3);
+
+  return {
+    handle,
+    available,
+    reason: problem || (available ? "" : "That handle is taken."),
+    suggestions,
+  };
+};
+
+/**
+ * Marks onboarding finished. A handle is the one thing onboarding can't
+ * finish without, so it's checked here rather than trusted from the app.
+ */
+const completeOnboarding = async (userId) => {
+  const user = await User.findById(userId);
+
+  if (!user) {
+    throw new ApiError(404, "User profile not found");
+  }
+
+  if (!user.handle) {
+    throw new ApiError(
+      400,
+      "Pick a handle before finishing.",
+      null,
+      "HANDLE_REQUIRED",
+    );
+  }
+
+  if (!user.onboardingCompletedAt) {
+    user.onboardingCompletedAt = new Date();
+    await user.save();
+  }
+
+  return sanitizeUser(user);
+};
 
 const resolveWorkspaceByRef = async (workspaceRef) => {
   const normalized = normalizeWorkspaceRef(workspaceRef);
@@ -207,10 +346,37 @@ const getUserSubscription = async (userId) => {
 };
 
 const updateUserProfile = async (userId, payload) => {
-  const user = await User.findByIdAndUpdate(userId, payload, {
-    new: true,
-    runValidators: true,
-  });
+  const update = { ...payload };
+
+  if (update.handle !== undefined) {
+    update.handle = normalizeHandle(update.handle);
+    const problem = describeHandleProblem(update.handle);
+
+    if (problem) {
+      throw new ApiError(400, problem, null, "HANDLE_INVALID");
+    }
+
+    if (await User.exists({ handle: update.handle, _id: { $ne: userId } })) {
+      throw new ApiError(409, "That handle is taken.", null, "HANDLE_TAKEN");
+    }
+  }
+
+  let user;
+
+  try {
+    user = await User.findByIdAndUpdate(userId, update, {
+      new: true,
+      runValidators: true,
+    });
+  } catch (error) {
+    /* The unique index is the real arbiter: two people can pass the
+       availability check for the same handle, only one can save it. */
+    if (error?.code === 11000 && error?.keyPattern?.handle) {
+      throw new ApiError(409, "That handle is taken.", null, "HANDLE_TAKEN");
+    }
+
+    throw error;
+  }
 
   if (!user) {
     throw new ApiError(404, "User profile not found");
@@ -263,6 +429,16 @@ const updateUserPreferences = async (userId, payload) => {
 
   if (payload.preferredCategoryIds !== undefined) {
     update["preferences.preferredCategoryIds"] = payload.preferredCategoryIds;
+  }
+
+  if (payload.marketingOptIn !== undefined) {
+    update["preferences.marketingOptIn"] = payload.marketingOptIn;
+  }
+
+  for (const topic of TOPIC_KEYS) {
+    if (payload.notifications?.[topic] !== undefined) {
+      update[`preferences.notifications.${topic}`] = payload.notifications[topic];
+    }
   }
 
   if (Object.keys(update).length === 0) {
@@ -517,6 +693,15 @@ const updatePassword = async ({ userId, currentPassword, newPassword }) => {
     throw new ApiError(404, "User profile not found");
   }
 
+  if (!user.passwordHash) {
+    throw new ApiError(
+      400,
+      "This account signs in with an emailed code, so it has no password.",
+      null,
+      "PASSWORDLESS_ACCOUNT",
+    );
+  }
+
   const isCurrentPasswordValid = await bcrypt.compare(
     currentPassword,
     user.passwordHash,
@@ -544,4 +729,6 @@ module.exports = {
   getUserPreferences,
   updateUserPreferences,
   getUserAttendanceReport,
+  checkHandleAvailability,
+  completeOnboarding,
 };

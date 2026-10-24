@@ -1,3 +1,5 @@
+process.env.PAYSTACK_SECRET_KEY = "sk_test_v1_checkout";
+
 jest.mock("../services/paystack.service", () => ({
   ...jest.requireActual("../services/paystack.service"),
   initializePaystackTransaction: jest.fn().mockResolvedValue({

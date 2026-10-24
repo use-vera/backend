@@ -140,6 +140,21 @@ const eventTicketSchema = new Schema(
       type: Date,
       default: null,
     },
+    /* How the money went back: "paystack" for a real refund, "none" when
+       there was no provider payment to return (free tickets, test-mode
+       payments Paystack never saw). */
+    refundMethod: {
+      type: String,
+      enum: ["paystack", "none", null],
+      default: null,
+    },
+    /* Set when a refund cannot happen automatically, so the cancellation
+       sweep stops retrying it and a person can step in. */
+    refundAttention: {
+      code: { type: String, default: "" },
+      message: { type: String, default: "" },
+      at: { type: Date, default: null },
+    },
     usedByUserId: {
       type: Schema.Types.ObjectId,
       ref: "User",

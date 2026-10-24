@@ -164,6 +164,10 @@ const initiatePaystackTransfer = async ({
     },
   });
 
+/** A transfer's current state by our reference: success, failed, reversed, pending… */
+const verifyPaystackTransfer = async (reference) =>
+  paystackRequest(`/transfer/verify/${encodeURIComponent(String(reference || "").trim())}`);
+
 const initiatePaystackRefund = async ({ transactionReference, amountKobo }) =>
   paystackRequest("/refund", {
     method: "POST",
@@ -199,5 +203,6 @@ module.exports = {
   resolveBankAccount,
   createTransferRecipient,
   initiatePaystackTransfer,
+  verifyPaystackTransfer,
   initiatePaystackRefund,
 };

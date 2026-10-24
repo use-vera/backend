@@ -4,6 +4,18 @@ const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
 const EventVendor = require("../models/event-vendor.model");
 const { refundTicket, refundStallFee } = require("./refund.service");
+const { readPaystackError } = require("./payment-refund.service");
+const { cancelResaleSalesForEvent } = require("./resale-payout.service");
+
+/* The reason Paystack gave, not just "request failed", so a log line says
+   what to do. */
+const describeRefundError = (error) => {
+  const { code, message } = readPaystackError(error);
+  return {
+    reason: error instanceof Error ? error.message : String(error),
+    ...(code ? { paystackCode: code, paystackMessage: message } : {}),
+  };
+};
 const {
   refundOrdersForCancelledEvent,
 } = require("./vendor-order.service");
@@ -57,7 +69,7 @@ const sweepEventVendors = async (event) => {
       // eslint-disable-next-line no-console
       console.error("[EventCancellationRefundMonitor] Vendor refund failed", {
         bookingId: String(booking._id),
-        reason: error instanceof Error ? error.message : String(error),
+        ...describeRefundError(error),
       });
     }
   }
@@ -67,6 +79,8 @@ const sweepEventTickets = async (event) => {
   const tickets = await EventTicket.find({
     eventId: event._id,
     status: { $in: ["paid", "used"] },
+    /* Flagged for a person: retrying cannot fix these. */
+    "refundAttention.at": null,
   }).limit(50);
 
   for (const ticket of tickets) {
@@ -90,12 +104,23 @@ const sweepEventTickets = async (event) => {
       // eslint-disable-next-line no-console
       console.error("[EventCancellationRefundMonitor] Ticket refund failed", {
         ticketId: String(ticket._id),
-        reason: error instanceof Error ? error.message : String(error),
+        ...describeRefundError(error),
       });
     }
   }
 
   await sweepEventVendors(event);
+
+  /* Resales on this event: no payouts, and sellers get back what they paid. */
+  try {
+    await cancelResaleSalesForEvent(event);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("[EventCancellationRefundMonitor] Resale cancellation failed", {
+      eventId: String(event._id),
+      ...describeRefundError(error),
+    });
+  }
 
   const remaining = await EventTicket.countDocuments({
     eventId: event._id,

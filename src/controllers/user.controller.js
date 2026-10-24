@@ -7,7 +7,46 @@ const {
   getUserPreferences,
   updateUserPreferences,
   getUserAttendanceReport,
+  checkHandleAvailability,
+  completeOnboarding,
 } = require("../services/user.service");
+const { listSuggestedHosts } = require("../services/follow.service");
+
+const checkHandleController = asyncHandler(async (req, res) => {
+  const result = await checkHandleAvailability({
+    userId: req.auth.userId,
+    handle: req.query.handle,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Handle checked",
+    data: result,
+  });
+});
+
+const completeOnboardingController = asyncHandler(async (req, res) => {
+  const profile = await completeOnboarding(req.auth.userId);
+
+  res.status(200).json({
+    success: true,
+    message: "Onboarding complete",
+    data: profile,
+  });
+});
+
+const listSuggestedHostsController = asyncHandler(async (req, res) => {
+  const result = await listSuggestedHosts({
+    userId: req.auth.userId,
+    limit: req.query.limit,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Suggested hosts fetched",
+    data: result,
+  });
+});
 
 const getMyProfileController = asyncHandler(async (req, res) => {
   const profile = await getUserProfile(req.auth.userId);
@@ -95,4 +134,7 @@ module.exports = {
   getMyPreferencesController,
   updateMyPreferencesController,
   getMyAttendanceReportController,
+  checkHandleController,
+  completeOnboardingController,
+  listSuggestedHostsController,
 };

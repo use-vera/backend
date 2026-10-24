@@ -1,4 +1,5 @@
 const asyncHandler = require("../utils/async-handler");
+const { listMyResaleSales } = require("../services/resale-payout.service");
 const {
   getWalletSummary,
   listWalletTransactions,
@@ -115,6 +116,16 @@ const getPayoutAccountController = asyncHandler(async (req, res) => {
   });
 });
 
+const listResaleEarningsController = asyncHandler(async (req, res) => {
+  const result = await listMyResaleSales({ sellerUserId: req.auth.userId });
+
+  res.status(200).json({
+    success: true,
+    message: "Resale earnings fetched",
+    data: result,
+  });
+});
+
 const deletePayoutAccountController = asyncHandler(async (req, res) => {
   const result = await deletePayoutAccount({ organizerUserId: req.auth.userId });
 
@@ -168,6 +179,7 @@ const applyChargebackController = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  listResaleEarningsController,
   getWalletSummaryController,
   listWalletTransactionsController,
   getWalletTransactionController,

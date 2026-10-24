@@ -7,7 +7,7 @@ const OrganizerWallet = require("../models/organizer-wallet.model");
 const WalletTransaction = require("../models/wallet-transaction.model");
 const { withMongoTransaction } = require("../utils/with-mongo-transaction");
 const { nairaToKobo } = require("./wallet.service");
-const { initiatePaystackRefund } = require("./paystack.service");
+const { returnPaystackPayment } = require("./payment-refund.service");
 
 const toIdString = (value) => String(value?._id || value || "");
 
@@ -32,6 +32,22 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
     throw new ApiError(403, "You cannot refund this ticket");
   }
 
+  // A buyer's way out of a ticket is resale; money only comes back on their
+  // say-so when the host has cancelled. Without this, a buyer could take
+  // their money back after being let in.
+  if (!isOrganizer) {
+    const event = await Event.findById(ticket.eventId).select("status").lean();
+
+    if (event?.status !== "cancelled") {
+      throw new ApiError(
+        403,
+        "Tickets are refunded when the host cancels the event. You can resell this ticket instead.",
+        null,
+        "REFUND_NOT_ALLOWED",
+      );
+    }
+  }
+
   if (!["paid", "used"].includes(ticket.status)) {
     throw new ApiError(
       409,
@@ -41,7 +57,24 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
     );
   }
 
-  if (!ticket.paymentReference) {
+  /* Free tickets (and dev-bypass ones) never touched Paystack: there is no
+     money to send back, only the ticket to close. */
+  const hasProviderPayment =
+    Boolean(ticket.paymentReference) && Number(ticket.totalPriceNaira || 0) > 0;
+
+  if (!ticket.paymentReference && ticket.paymentProvider === "paystack") {
+    await EventTicket.updateOne(
+      { _id: ticketId },
+      {
+        $set: {
+          refundAttention: {
+            code: "NO_PAYMENT_REFERENCE",
+            message: "Paid through Paystack but no payment reference is on file",
+            at: new Date(),
+          },
+        },
+      },
+    );
     throw new ApiError(
       422,
       "This ticket has no payment reference to refund",
@@ -66,21 +99,43 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
     throw new ApiError(409, "Ticket was already refunded", null, "TICKET_ALREADY_REFUNDED");
   }
 
-  try {
-    await initiatePaystackRefund({
-      transactionReference: ticket.paymentReference,
-      amountKobo: nairaToKobo(ticket.totalPriceNaira),
-    });
-  } catch (error) {
-    // Provider call failed. Release the claim so this is retryable rather
-    // than leaving the ticket stuck "refunded" with no money returned.
-    await EventTicket.updateOne(
-      { _id: ticketId, status: "refunded" },
-      { $set: { status: originalStatus }, $unset: { refundedAt: "" } },
-    );
+  let refundMethod = "none";
 
-    throw error;
+  if (hasProviderPayment) {
+    try {
+      const { outcome } = await returnPaystackPayment({
+        reference: ticket.paymentReference,
+        amountKobo: nairaToKobo(ticket.totalPriceNaira),
+      });
+      refundMethod = outcome === "no_provider_payment" ? "none" : "paystack";
+    } catch (error) {
+      // Provider call failed. Release the claim so this is retryable rather
+      // than leaving the ticket stuck "refunded" with no money returned. A
+      // payment Paystack cannot find will never succeed on retry, so it is
+      // flagged for a person instead of being retried forever.
+      const needsPerson = error instanceof ApiError && error.code === "PAYMENT_NOT_FOUND_AT_PROVIDER";
+      await EventTicket.updateOne(
+        { _id: ticketId, status: "refunded" },
+        {
+          $set: {
+            status: originalStatus,
+            ...(needsPerson
+              ? { refundAttention: { code: error.code, message: error.message, at: new Date() } }
+              : {}),
+          },
+          $unset: { refundedAt: "" },
+        },
+      );
+
+      throw error;
+    }
   }
+
+  await EventTicket.updateOne(
+    { _id: ticketId },
+    { $set: { refundMethod, refundAttention: { code: "", message: "", at: null } } },
+  );
+  claimedTicket.refundMethod = refundMethod;
 
   await withMongoTransaction(async (session) => {
     const saleTransaction = await WalletTransaction.findOne({
@@ -334,8 +389,8 @@ const refundStallFee = async ({ bookingId, reason }) => {
   }
 
   try {
-    await initiatePaystackRefund({
-      transactionReference: booking.stallFeePaymentReference,
+    await returnPaystackPayment({
+      reference: booking.stallFeePaymentReference,
       amountKobo: nairaToKobo(amountNaira),
     });
   } catch (error) {

@@ -22,6 +22,29 @@ const signRealtimeToken = (payload) =>
     expiresIn: env.realtimeTokenExpiresIn,
   });
 
+const SIGNUP_SCOPE = "signup";
+const SIGNUP_TOKEN_TTL = "30m";
+
+/**
+ * Proof that someone just verified an emailed code for an address that has
+ * no account yet. It carries the email and nothing else, and is good for
+ * one thing: finishing sign-up for that email. authMiddleware refuses it.
+ */
+const signSignupToken = ({ email }) =>
+  jwt.sign({ email, scope: SIGNUP_SCOPE }, env.jwtSecret, {
+    expiresIn: SIGNUP_TOKEN_TTL,
+  });
+
+const verifySignupToken = (token) => {
+  const payload = jwt.verify(token, env.jwtSecret);
+
+  if (payload?.scope !== SIGNUP_SCOPE || !payload.email) {
+    throw new jwt.JsonWebTokenError("Not a sign-up token");
+  }
+
+  return payload;
+};
+
 const signRefreshToken = (payload) =>
   jwt.sign(payload, env.jwtRefreshSecret, {
     expiresIn: env.jwtRefreshExpiresIn,
@@ -32,7 +55,10 @@ const verifyRefreshToken = (token) =>
 
 module.exports = {
   REALTIME_SCOPE,
+  SIGNUP_SCOPE,
   signAccessToken,
+  signSignupToken,
+  verifySignupToken,
   signRealtimeToken,
   verifyAccessToken,
   signRefreshToken,

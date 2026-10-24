@@ -57,6 +57,11 @@ Default bind host is `0.0.0.0` so mobile devices on the same network can access 
 - `RESEND_BASE_URL`: Resend API base URL (default `https://api.resend.com`)
 - `SMTP_URL`: connection string, required when `EMAIL_PROVIDER=smtp` (also run `npm i nodemailer`)
 - `WEB_BASE_URL`: where links in emails point (default `https://vera.app`)
+- `LLM_PROVIDER`: Vera's model provider. `ollama` (default) runs a local model for development; the Claude API is to be added before launch
+- `LLM_MODEL`: model name (default `qwen2.5:3b`; it must support tool calling)
+- `OLLAMA_BASE_URL`: where Ollama listens (default `http://127.0.0.1:11434`)
+- `LLM_TIMEOUT_MS`: how long to wait for one model reply (default `60000`)
+- `VERA_DAILY_FREE_MESSAGES`: messages a free account can send Vera per day (default `15`; Premium has no limit)
 
 If Atlas access is blocked, verify:
 1. Current device IP is in Atlas Network Access list.

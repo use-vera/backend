@@ -1,4 +1,5 @@
 const ApiError = require("../utils/api-error");
+const { isBlockedEitherWay } = require("./account-security.service");
 const mongoose = require("mongoose");
 const User = require("../models/user.model");
 const Event = require("../models/event.model");
@@ -647,6 +648,10 @@ const createOrGetDirectConversation = async ({
 
   await Promise.all([ensureUserExists(actorUserId), ensureUserExists(recipientUserId)]);
 
+  if (await isBlockedEitherWay(actorUserId, recipientUserId)) {
+    throw new ApiError(403, "You can't message this person.", null, "USER_BLOCKED");
+  }
+
   const directKey = makeDirectKey(actorUserId, recipientUserId);
   let conversation = await DirectConversation.findOne({ directKey })
     .select("_id");
@@ -746,6 +751,15 @@ const sendDirectMessage = async ({
     actorUserId,
     withParticipants: true,
   });
+
+  /* A conversation from before a block stays readable but goes quiet. */
+  const otherParticipant = (conversation.participants || [])
+    .map((participant) => String(participant?._id || participant || ""))
+    .find((id) => id && id !== String(actorUserId));
+
+  if (otherParticipant && (await isBlockedEitherWay(actorUserId, otherParticipant))) {
+    throw new ApiError(403, "You can't message this person.", null, "USER_BLOCKED");
+  }
 
   const messageInput = await buildDirectMessageWrite({
     actorUserId,

@@ -63,6 +63,14 @@ const {
   createEventPostCommentSchema,
   listEventPostCommentsQuerySchema,
   createTicketResaleSchema,
+  createTicketTransferSchema,
+  transferIdParamsSchema,
+  transferTokenParamsSchema,
+  listSavedEventsQuerySchema,
+  importSavedEventsSchema,
+  discoverListQuerySchema,
+  trendingQuerySchema,
+  mapPinsQuerySchema,
   listTicketResaleBidsQuerySchema,
   createTicketResaleBidSchema,
   listEventResaleMarketplaceQuerySchema,
@@ -119,12 +127,12 @@ const {
   listEventTicketsController,
   listEventResaleMarketplaceController,
   createTicketResaleController,
+  getTicketResaleOptionsController,
   cancelTicketResaleController,
   listTicketResaleBidsController,
   createTicketResaleBidController,
   acceptTicketResaleBidController,
   rejectTicketResaleBidController,
-  purchaseResaleTicketController,
   initializeResalePurchaseController,
   verifyResalePurchaseController,
   listTicketTodosController,
@@ -179,9 +187,113 @@ const {
   updateVendorSettingsController,
 } = require("../controllers/event-vendor.controller");
 
+const { rateLimit } = require("../middlewares/rate-limit.middleware");
+const {
+  getHomeController,
+  getTrendingController,
+  listDiscoverController,
+  getMapPinsController,
+  getBusiestHoursController,
+} = require("../controllers/discover.controller");
+const {
+  getTicketReceiptController,
+  emailTicketReceiptController,
+  createTicketTransferController,
+  cancelTicketTransferController,
+  listIncomingTransfersController,
+  getTransferByTokenController,
+  acceptTicketTransferController,
+  declineTicketTransferController,
+  getMyWaitlistStatusController,
+  joinWaitlistController,
+  leaveWaitlistController,
+  listSavedEventsController,
+  listSavedEventIdsController,
+  importSavedEventsController,
+  saveEventController,
+  unsaveEventController,
+} = require("../controllers/ticket-extras.controller");
+
 const router = express.Router();
 
 router.use(authMiddleware);
+
+/* Fixed paths before any "/:eventId" route, so "transfers" is never read as an id. */
+const transferSendLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  keyFn: (req) => `ticket-transfer:${req.auth?.userId || req.ip}`,
+});
+const receiptEmailLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  keyFn: (req) => `receipt-email:${req.auth?.userId || req.ip}`,
+});
+
+router.get("/discover/home", getHomeController);
+router.get("/discover/trending", validateQuery(trendingQuerySchema), getTrendingController);
+router.get("/discover/list", validateQuery(discoverListQuerySchema), listDiscoverController);
+router.get("/map/pins", validateQuery(mapPinsQuerySchema), getMapPinsController);
+router.get("/:eventId/busiest-hours", validateParams(eventIdParamsSchema), getBusiestHoursController);
+router.get("/saved", validateQuery(listSavedEventsQuerySchema), listSavedEventsController);
+router.get("/saved/ids", listSavedEventIdsController);
+router.post("/saved/import", validateBody(importSavedEventsSchema), importSavedEventsController);
+router.post("/:eventId/save", validateParams(eventIdParamsSchema), saveEventController);
+router.delete("/:eventId/save", validateParams(eventIdParamsSchema), unsaveEventController);
+router.get("/transfers/incoming", listIncomingTransfersController);
+router.get(
+  "/transfers/claim/:token",
+  validateParams(transferTokenParamsSchema),
+  getTransferByTokenController,
+);
+router.post(
+  "/transfers/:transferId/accept",
+  validateParams(transferIdParamsSchema),
+  acceptTicketTransferController,
+);
+router.post(
+  "/transfers/:transferId/decline",
+  validateParams(transferIdParamsSchema),
+  declineTicketTransferController,
+);
+router.get(
+  "/tickets/:ticketId/receipt",
+  validateParams(ticketIdParamsSchema),
+  getTicketReceiptController,
+);
+router.post(
+  "/tickets/:ticketId/receipt/email",
+  validateParams(ticketIdParamsSchema),
+  receiptEmailLimit,
+  emailTicketReceiptController,
+);
+router.post(
+  "/tickets/:ticketId/transfer",
+  validateParams(ticketIdParamsSchema),
+  transferSendLimit,
+  validateBody(createTicketTransferSchema),
+  createTicketTransferController,
+);
+router.delete(
+  "/tickets/:ticketId/transfer",
+  validateParams(ticketIdParamsSchema),
+  cancelTicketTransferController,
+);
+router.get(
+  "/:eventId/waitlist/me",
+  validateParams(eventIdParamsSchema),
+  getMyWaitlistStatusController,
+);
+router.post(
+  "/:eventId/waitlist",
+  validateParams(eventIdParamsSchema),
+  joinWaitlistController,
+);
+router.delete(
+  "/:eventId/waitlist",
+  validateParams(eventIdParamsSchema),
+  leaveWaitlistController,
+);
 
 router.get("/", validateQuery(listEventsQuerySchema), listEventsController);
 router.get("/countries", listEventCountriesController);
@@ -276,6 +388,11 @@ router.post(
   initializeTicketUpgradeController,
 );
 
+router.get(
+  "/tickets/:ticketId/resale-options",
+  validateParams(ticketIdParamsSchema),
+  getTicketResaleOptionsController,
+);
 router.post(
   "/tickets/:ticketId/resale",
   validateParams(ticketIdParamsSchema),
@@ -320,11 +437,6 @@ router.post(
   validateParams(ticketIdParamsSchema),
   validateBody(verifyTicketPaymentSchema),
   verifyResalePurchaseController,
-);
-router.post(
-  "/tickets/:ticketId/resale-purchase",
-  validateParams(ticketIdParamsSchema),
-  purchaseResaleTicketController,
 );
 router.get(
   "/tickets/:ticketId/todos",

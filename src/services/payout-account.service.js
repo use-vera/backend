@@ -1,6 +1,7 @@
 const ApiError = require("../utils/api-error");
 const PayoutAccount = require("../models/payout-account.model");
 const Withdrawal = require("../models/withdrawal.model");
+const { releaseDueResaleSales } = require("./resale-payout.service");
 const {
   listBanks,
   resolveBankAccount,
@@ -65,6 +66,17 @@ const previewPayoutAccount = async ({ bankCode, accountNumber }) => {
  * belongs to a real bank account with that name. Treated as sufficient
  * verification for this pass (no separate KYC document upload step).
  */
+/* Paystack's account-resolve call returns no bank name, so it comes from
+   the bank list by code. Empty if the list can't be reached. */
+const resolveBankName = async (bankCode) => {
+  try {
+    const banks = await listNigerianBanks();
+    return banks.find((bank) => String(bank.code) === String(bankCode))?.name || "";
+  } catch {
+    return "";
+  }
+};
+
 const upsertPayoutAccount = async ({ organizerUserId, bankCode, accountNumber }) => {
   const resolved = await resolveBankAccount({ accountNumber, bankCode });
 
@@ -83,7 +95,7 @@ const upsertPayoutAccount = async ({ organizerUserId, bankCode, accountNumber })
     {
       $set: {
         bankCode,
-        bankName: resolved.bank_name || "",
+        bankName: resolved.bank_name || (await resolveBankName(bankCode)),
         accountNumber,
         accountName: resolved.account_name,
         paystackRecipientCode: recipient?.recipient_code || "",
@@ -93,6 +105,9 @@ const upsertPayoutAccount = async ({ organizerUserId, bankCode, accountNumber })
     },
     { upsert: true, new: true },
   );
+
+  /* Resale money waiting on bank details goes out now, not on the next tick. */
+  void releaseDueResaleSales({ sellerUserId: organizerUserId }).catch(() => null);
 
   return payoutAccount;
 };
@@ -125,6 +140,7 @@ const deletePayoutAccount = async ({ organizerUserId }) => {
 };
 
 module.exports = {
+  resolveBankName,
   listNigerianBanks,
   previewPayoutAccount,
   upsertPayoutAccount,

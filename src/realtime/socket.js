@@ -17,6 +17,7 @@ const {
   deleteDirectMessage,
 } = require("../services/chat.service");
 const { setSocketServer } = require("./socket-broker");
+const { isSessionActive } = require("../services/session.service");
 
 const getAllowedOrigins = () => {
   if (env.corsOrigins.includes("*")) {
@@ -111,6 +112,13 @@ const initializeSocketServer = ({ httpServer }) => {
       }
 
       const payload = verifyAccessToken(token);
+
+      /* A signed-out device can't open a socket with an old token either. */
+      if (payload.sid && !(await isSessionActive(payload.sid))) {
+        next(new Error("This device was signed out"));
+        return;
+      }
+
       const user = await User.findById(payload.userId).select("_id");
 
       if (!user) {

@@ -165,6 +165,18 @@ const env = {
   ),
   expoAccessToken: process.env.EXPO_ACCESS_TOKEN || "",
   walletCreditingEnabled: toBoolean(process.env.WALLET_CREDITING_ENABLED, true),
+  /* Resale money is held until this long after the event ends, then paid
+     to the seller's bank. */
+  resalePayoutDelayHours: toNumber(process.env.RESALE_PAYOUT_DELAY_HOURS, 24),
+  resalePayoutMonitorEnabled: toBoolean(
+    process.env.RESALE_PAYOUT_MONITOR_ENABLED,
+    nodeEnv !== "test",
+  ),
+  waitlistMonitorEnabled: toBoolean(process.env.WAITLIST_MONITOR_ENABLED, nodeEnv !== "test"),
+  accountDeletionMonitorEnabled: toBoolean(process.env.ACCOUNT_DELETION_MONITOR_ENABLED, nodeEnv !== "test"),
+  accountDeletionMonitorTickMs: toNumber(process.env.ACCOUNT_DELETION_MONITOR_TICK_MS, 60 * 60 * 1000),
+  waitlistMonitorTickMs: toNumber(process.env.WAITLIST_MONITOR_TICK_MS, 2 * 60 * 1000),
+  resalePayoutMonitorTickMs: toNumber(process.env.RESALE_PAYOUT_MONITOR_TICK_MS, 5 * 60 * 1000),
   walletSettlementMonitorEnabled: toBoolean(
     process.env.WALLET_SETTLEMENT_MONITOR_ENABLED,
     true,
@@ -184,7 +196,15 @@ const env = {
   checkoutSessionMonitorTickMs: toNumber(
     process.env.CHECKOUT_SESSION_MONITOR_TICK_MS,
     5 * 60 * 1000,
-  ),
+  ),  /* Vera's model. "ollama" runs a local model for development; "anthropic"
+     is the Claude API, to be wired in before launch. */
+  llmProvider: (process.env.LLM_PROVIDER || "ollama").trim().toLowerCase(),
+  llmModel: process.env.LLM_MODEL || "qwen2.5:3b",
+  ollamaBaseUrl: (process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/$/, ""),
+  llmTimeoutMs: toNumber(process.env.LLM_TIMEOUT_MS, 60000),
+  veraDailyFreeMessages: toNumber(process.env.VERA_DAILY_FREE_MESSAGES, 15),
+  veraWatchMonitorEnabled: toBoolean(process.env.VERA_WATCH_MONITOR_ENABLED, nodeEnv !== "test"),
+  veraWatchMonitorTickMs: toNumber(process.env.VERA_WATCH_MONITOR_TICK_MS, 2 * 60 * 1000),
 };
 
 if (

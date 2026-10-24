@@ -1,3 +1,5 @@
+process.env.PAYSTACK_SECRET_KEY = "sk_test_wallet_transaction_details";
+
 const { withMongoTransaction } = require("../utils/with-mongo-transaction");
 const {
   creditTicketSale,

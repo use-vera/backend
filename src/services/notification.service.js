@@ -2,6 +2,8 @@ const ApiError = require("../utils/api-error");
 const env = require("../config/env");
 const AppNotification = require("../models/notification.model");
 const DeviceToken = require("../models/device-token.model");
+const User = require("../models/user.model");
+const { topicForType } = require("../constants/notification-topics");
 const { emitUserNotificationCreated } = require("../realtime/socket-broker");
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
@@ -205,6 +207,18 @@ const sendPushToUser = async ({ userId, title, message, data = {} }) => {
   };
 };
 
+/* Whether the person switched off pushes for this kind of notification. */
+const hasMutedTopic = async (userId, type) => {
+  const topic = topicForType(type);
+
+  if (!topic) {
+    return false;
+  }
+
+  const user = await User.findById(userId).select(`preferences.notifications.${topic}`).lean();
+  return user?.preferences?.notifications?.[topic] === false;
+};
+
 const createNotification = async ({
   userId,
   type,
@@ -226,7 +240,7 @@ const createNotification = async ({
     notification,
   });
 
-  if (!push) {
+  if (!push || (await hasMutedTopic(userId, notification.type))) {
     return {
       notification,
       pushResult: {

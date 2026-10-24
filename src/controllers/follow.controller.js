@@ -49,8 +49,10 @@ const getFollowStatusController = asyncHandler(async (req, res) => {
 const listFollowersController = asyncHandler(async (req, res) => {
   const result = await listFollowers({
     userId: req.params.userId,
+    viewerUserId: req.auth.userId,
     page: req.query.page,
     limit: req.query.limit,
+    search: req.query.search,
   });
 
   res.status(200).json({
@@ -63,6 +65,7 @@ const listFollowersController = asyncHandler(async (req, res) => {
 const listFollowingController = asyncHandler(async (req, res) => {
   const result = await listFollowing({
     userId: req.params.userId,
+    viewerUserId: req.auth.userId,
     page: req.query.page,
     limit: req.query.limit,
     search: req.query.search,

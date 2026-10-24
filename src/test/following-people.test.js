@@ -64,3 +64,37 @@ test("following is searchable and paginated on the server", async () => {
   expect(weird.status).toBe(200);
   expect(weird.body.data.items).toHaveLength(0);
 });
+
+/* "your people." shows Following or Follow back on each row, so each person
+   carries their handle and whether the viewer follows them. */
+test("followers carry handles and whether you follow them back, and can be searched", async () => {
+  const me = await createUser();
+  const chidi = await createUser({ fullName: "Chidi Okeke", handle: "chidi" });
+  const kemi = await createUser({ fullName: "Kemi Bello", handle: "kemi" });
+
+  await Follow.create([
+    { followerUserId: chidi._id, followingUserId: me._id },
+    { followerUserId: kemi._id, followingUserId: me._id },
+    { followerUserId: me._id, followingUserId: chidi._id },
+  ]);
+
+  const followers = await request(app)
+    .get(`/api/follows/${me._id}/followers?page=1&limit=50`)
+    .set("Authorization", auth(me));
+  expect(followers.status).toBe(200);
+  const byHandle = Object.fromEntries(followers.body.data.items.map((user) => [user.handle, user]));
+  expect(byHandle.chidi.viewerFollows).toBe(true);
+  expect(byHandle.kemi.viewerFollows).toBe(false);
+  expect(byHandle.kemi.email).toBeUndefined();
+
+  const searched = await request(app)
+    .get(`/api/follows/${me._id}/followers?page=1&limit=50&search=kem`)
+    .set("Authorization", auth(me));
+  expect(searched.body.data.items.map((user) => user.handle)).toEqual(["kemi"]);
+
+  // Someone else looking at my followers sees their own follow state, not mine.
+  const outsider = await request(app)
+    .get(`/api/follows/${me._id}/followers?page=1&limit=50`)
+    .set("Authorization", auth(kemi));
+  expect(outsider.body.data.items.every((user) => user.viewerFollows === false)).toBe(true);
+});

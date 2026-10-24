@@ -23,6 +23,7 @@ const {
   previewPayoutAccountController,
   upsertPayoutAccountController,
   getPayoutAccountController,
+  listResaleEarningsController,
   deletePayoutAccountController,
   requestWithdrawalController,
   listWithdrawalsController,
@@ -59,6 +60,7 @@ router.post(
   upsertPayoutAccountController,
 );
 router.get("/payout-account", getPayoutAccountController);
+router.get("/resale-earnings", listResaleEarningsController);
 router.delete("/payout-account", deletePayoutAccountController);
 
 router.post(

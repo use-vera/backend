@@ -29,6 +29,10 @@ const {
 const {
   startEventCancellationRefundMonitor,
 } = require("./services/event-cancellation-refund-monitor.service");
+const { startResalePayoutMonitor } = require("./services/resale-payout-monitor.service");
+const { startWaitlistMonitor } = require("./services/waitlist-monitor.service");
+const { startVeraWatchMonitor } = require("./services/vera-watch-monitor.service");
+const { startAccountDeletionMonitor } = require("./services/account-deletion-monitor.service");
 const { initializeSocketServer } = require("./realtime/socket");
 
 const startServer = async () => {
@@ -52,6 +56,10 @@ const startServer = async () => {
       startStallHoldMonitor();
       startEmergencyConfidenceMonitor();
       startEventCancellationRefundMonitor();
+      startResalePayoutMonitor();
+      startWaitlistMonitor();
+      startVeraWatchMonitor();
+      startAccountDeletionMonitor();
     });
   } catch (error) {
     // eslint-disable-next-line no-console

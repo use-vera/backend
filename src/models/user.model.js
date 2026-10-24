@@ -46,10 +46,38 @@ const userSchema = new Schema(
       unique: true,
       index: true,
     },
+    /* Empty for accounts created by emailed sign-in code: they have no
+       password. The web app's password sign-in still reads this. */
     passwordHash: {
       type: String,
-      required: true,
+      default: "",
       select: false,
+    },
+    /* The public @name. Lowercase, unique when present. Accounts that
+       predate handles simply don't have one, hence sparse. */
+    handle: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      minlength: 3,
+      maxlength: 24,
+      default: undefined,
+      unique: true,
+      sparse: true,
+    },
+    /* Three states, on purpose:
+         undefined - an account from before onboarding existed; never
+                     sent through it.
+         null      - created by sign-in code, onboarding not finished yet.
+         a date    - finished.
+       So no default here: a default would back-fill every old account as
+       "not finished" the moment it is read. */
+    onboardingCompletedAt: {
+      type: Date,
+    },
+    termsAcceptedAt: {
+      type: Date,
+      default: null,
     },
     avatarUrl: {
       type: String,
@@ -102,6 +130,19 @@ const userSchema = new Schema(
       default: null,
       select: false,
     },
+    /* Set when the person deletes their account: the profile is wiped at
+       once, and purgedAt is set once everything else they made is erased. */
+    deletedAt: { type: Date, default: null, index: true },
+    purgedAt: { type: Date, default: null },
+    /* A new sign-in email waiting on its emailed code. Only becomes the
+       email once that code is entered. */
+    pendingEmail: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: "",
+      select: false,
+    },
     preferences: {
       trackOnlyActiveHours: {
         type: Boolean,
@@ -136,10 +177,26 @@ const userSchema = new Schema(
         type: Boolean,
         default: true,
       },
+      /* Opt-in to drops and early-access email/text. Off unless the person
+         ticked the box. */
+      marketingOptIn: {
+        type: Boolean,
+        default: false,
+      },
       preferredCategoryIds: {
         type: [Schema.Types.ObjectId],
         ref: "Category",
         default: [],
+      },
+      /* Push switches, one per topic in constants/notification-topics.js.
+         Everything defaults on; turning one off stops the push but keeps
+         the notification in the inbox. */
+      notifications: {
+        reminders: { type: Boolean, default: true },
+        resaleOffers: { type: Boolean, default: true },
+        eventChat: { type: Boolean, default: true },
+        followersAndMessages: { type: Boolean, default: true },
+        watches: { type: Boolean, default: true },
       },
     },
     verificationBadge: {

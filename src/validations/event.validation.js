@@ -613,6 +613,60 @@ const eventIdParamsSchema = z.object({
   eventId: objectIdSchema,
 });
 
+/* "true"/"false" from a query string. z.coerce.boolean would read "false" as true. */
+const queryFlagSchema = z
+  .enum(["true", "false", "1", "0"])
+  .transform((value) => value === "true" || value === "1");
+
+/* Discover's chips and "all →", and the map. Shared filter vocabulary. */
+const discoverFilterFields = {
+  when: z.enum(["tonight", "now", "weekend", "week", "all"]).optional().default("all"),
+  priceMax: z.coerce.number().int().min(0).max(10_000_000).optional(),
+  free: queryFlagSchema.optional(),
+  friendsOnly: queryFlagSchema.optional(),
+  category: objectIdSchema.optional(),
+  runningAt: z.string().datetime({ offset: true }).optional(),
+  state: z.string().trim().max(80).optional(),
+};
+
+const discoverListQuerySchema = z.object({
+  ...discoverFilterFields,
+  sort: z.enum(["match", "soonest", "cheapest"]).optional().default("match"),
+  page: z.coerce.number().int().min(1).max(10000).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+});
+
+const trendingQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(20).optional().default(10),
+  state: z.string().trim().max(80).optional(),
+});
+
+const mapPinsQuerySchema = z
+  .object({
+    ...discoverFilterFields,
+    lat: z.coerce.number().min(-90).max(90).optional(),
+    lng: z.coerce.number().min(-180).max(180).optional(),
+    radiusKm: z.coerce.number().min(0.5).max(100).optional().default(15),
+    limit: z.coerce.number().int().min(1).max(80).optional().default(40),
+  })
+  .refine((value) => (value.lat === undefined) === (value.lng === undefined), {
+    message: "lat and lng go together",
+    path: ["lng"],
+  });
+
+const listSavedEventsQuerySchema = z.object({
+  scope: z.enum(["upcoming", "past"]).optional().default("upcoming"),
+  page: z.coerce.number().int().min(1).max(100000).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+});
+
+/* Ids from the phone's old local list. Shape is loose on purpose: bad ids
+   are skipped by the service, not rejected, so one stale entry can't block
+   the rest from moving across. */
+const importSavedEventsSchema = z.object({
+  eventIds: z.array(z.string().trim().max(64)).max(200),
+});
+
 const organizerIdParamsSchema = z.object({
   organizerId: objectIdSchema,
 });
@@ -708,7 +762,9 @@ const listMyTicketsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
   search: z.string().trim().max(120).optional(),
   status: z
-    .enum(["all", "pending", "paid", "used", "cancelled", "expired", "refunded"])
+    /* "wallet" is the Tickets tab: everything the holder should see,
+       including a purchase still waiting on payment, which "all" leaves out. */
+    .enum(["all", "wallet", "pending", "paid", "used", "cancelled", "expired", "refunded"])
     .optional()
     .default("all"),
   // When set, returns every ticket from one purchase (see
@@ -830,6 +886,20 @@ const listEventResaleMarketplaceQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
 });
 
+const createTicketTransferSchema = z.object({
+  /* An @handle or an email address. */
+  to: z.string().trim().min(2).max(160),
+  note: z.string().trim().max(200).optional(),
+});
+
+const transferIdParamsSchema = z.object({
+  transferId: z.string().regex(/^[a-fA-F0-9]{24}$/, "Invalid transfer id"),
+});
+
+const transferTokenParamsSchema = z.object({
+  token: z.string().trim().min(16).max(120).regex(/^[A-Za-z0-9_-]+$/, "Invalid link"),
+});
+
 const createTicketTodoSchema = z
   .object({
     title: z.string().trim().min(1).max(180),
@@ -882,6 +952,11 @@ module.exports = {
   previewPromoCodeSchema,
   listMyEventsQuerySchema,
   eventIdParamsSchema,
+  listSavedEventsQuerySchema,
+  importSavedEventsSchema,
+  discoverListQuerySchema,
+  trendingQuerySchema,
+  mapPinsQuerySchema,
   addOnRedeemParamsSchema,
   initializeTicketUpgradeSchema,
   organizerIdParamsSchema,
@@ -920,4 +995,7 @@ module.exports = {
   listEventResaleMarketplaceQuerySchema,
   createTicketTodoSchema,
   updateTicketTodoSchema,
+  createTicketTransferSchema,
+  transferIdParamsSchema,
+  transferTokenParamsSchema,
 };

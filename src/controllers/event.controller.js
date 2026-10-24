@@ -45,7 +45,7 @@ const {
   createTicketResaleBid,
   acceptTicketResaleBid,
   rejectTicketResaleBid,
-  purchaseResaleTicket,
+  getTicketResaleOptions,
   initializeResalePurchase,
   verifyResalePurchase,
   listTicketTodos,
@@ -904,6 +904,19 @@ const createTicketResaleController = asyncHandler(async (req, res) => {
   });
 });
 
+const getTicketResaleOptionsController = asyncHandler(async (req, res) => {
+  const result = await getTicketResaleOptions({
+    ticketId: req.params.ticketId,
+    actorUserId: req.auth.userId,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Resale options fetched",
+    data: result,
+  });
+});
+
 const cancelTicketResaleController = asyncHandler(async (req, res) => {
   const result = await cancelTicketResale({
     ticketId: req.params.ticketId,
@@ -1000,19 +1013,6 @@ const rejectTicketResaleBidController = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: "Bid rejected",
-    data: result,
-  });
-});
-
-const purchaseResaleTicketController = asyncHandler(async (req, res) => {
-  const result = await purchaseResaleTicket({
-    ticketId: req.params.ticketId,
-    actorUserId: req.auth.userId,
-  });
-
-  res.status(200).json({
-    success: true,
-    message: "Resale ticket purchased",
     data: result,
   });
 });
@@ -1139,7 +1139,7 @@ module.exports = {
   rejectTicketResaleBidController,
   initializeResalePurchaseController,
   verifyResalePurchaseController,
-  purchaseResaleTicketController,
+  getTicketResaleOptionsController,
   listTicketTodosController,
   createTicketTodoController,
   updateTicketTodoController,

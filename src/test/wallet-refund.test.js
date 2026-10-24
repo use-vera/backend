@@ -35,7 +35,7 @@ test("pre-settlement refund fully reverses the pending balance", async () => {
 
   await refundTicket({
     ticketId: ticket._id,
-    actorUserId: String(buyer._id),
+    actorUserId: String(organizer._id),
     reason: "attendee requested",
   });
 
