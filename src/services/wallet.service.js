@@ -49,11 +49,15 @@ const getOrCreateWallet = async (organizerUserId, session = null) =>
  * transaction, whose pre-check will then see the now-committed row and
  * return cleanly.
  */
-const creditTicketSale = async ({ ticket, session, event: providedEvent = null }) => {
+const creditTicketSale = async ({
+  ticket,
+  session,
+  event: providedEvent = null,
+}) => {
   const idempotencyKey = `ticket_sale:${ticket._id}`;
-  const alreadyCredited = await WalletTransaction.exists({ idempotencyKey }).session(
-    session,
-  );
+  const alreadyCredited = await WalletTransaction.exists({
+    idempotencyKey,
+  }).session(session);
 
   if (alreadyCredited) {
     return;
@@ -153,11 +157,15 @@ const creditTicketSale = async ({ ticket, session, event: providedEvent = null }
  * add-on shares its ticket's id, so folding these into ticket_sale would make
  * a refund reverse the wrong amount.
  */
-const creditAddOnSale = async ({ purchase, session, event: providedEvent = null }) => {
+const creditAddOnSale = async ({
+  purchase,
+  session,
+  event: providedEvent = null,
+}) => {
   const idempotencyKey = `add_on_sale:${purchase._id}`;
-  const alreadyCredited = await WalletTransaction.exists({ idempotencyKey }).session(
-    session,
-  );
+  const alreadyCredited = await WalletTransaction.exists({
+    idempotencyKey,
+  }).session(session);
 
   if (alreadyCredited) {
     return;
@@ -258,11 +266,16 @@ const creditAddOnSale = async ({ purchase, session, event: providedEvent = null 
  * own key: the ticket already carries a `ticket_sale` credit for what it
  * originally cost, and a refund looks that one up by ticketId.
  */
-const creditTicketUpgrade = async ({ ticket, pricingBreakdown, session, event: providedEvent = null }) => {
+const creditTicketUpgrade = async ({
+  ticket,
+  pricingBreakdown,
+  session,
+  event: providedEvent = null,
+}) => {
   const idempotencyKey = `ticket_upgrade:${ticket._id}:${ticket.paymentReference || "none"}`;
-  const alreadyCredited = await WalletTransaction.exists({ idempotencyKey }).session(
-    session,
-  );
+  const alreadyCredited = await WalletTransaction.exists({
+    idempotencyKey,
+  }).session(session);
 
   if (alreadyCredited) {
     return;
@@ -378,9 +391,15 @@ const listWalletTransactions = async ({
     WalletTransaction.countDocuments(query),
   ]);
 
+  console.log(items, "Wallet Transactions", totalItems, "Total Items");
+
   return {
     items,
-    ...buildPaginationMeta({ page: pageNumber, limit: limitNumber, totalItems }),
+    ...buildPaginationMeta({
+      page: pageNumber,
+      limit: limitNumber,
+      totalItems,
+    }),
   };
 };
 
@@ -413,7 +432,11 @@ const getWalletTransactionById = async ({ transactionId, organizerUserId }) => {
  * history; it has always meant "the user this wallet belongs to", and reusing
  * it means settlement, payouts and withdrawals already work for vendors.
  */
-const creditVendorOrder = async ({ order, session, event: providedEvent = null }) => {
+const creditVendorOrder = async ({
+  order,
+  session,
+  event: providedEvent = null,
+}) => {
   const event =
     providedEvent || (await Event.findById(order.eventId).session(session));
 
@@ -424,7 +447,9 @@ const creditVendorOrder = async ({ order, session, event: providedEvent = null }
   }
 
   const settlementFor = async (userId) => {
-    const owner = await User.findById(userId).select("payoutTier").session(session);
+    const owner = await User.findById(userId)
+      .select("payoutTier")
+      .session(session);
 
     return new Date(
       new Date(event.endsAt).getTime() +
@@ -432,7 +457,13 @@ const creditVendorOrder = async ({ order, session, event: providedEvent = null }
     );
   };
 
-  const credit = async ({ userId, type, amountNaira, description, feeKobo = 0 }) => {
+  const credit = async ({
+    userId,
+    type,
+    amountNaira,
+    description,
+    feeKobo = 0,
+  }) => {
     const amountKobo = nairaToKobo(amountNaira);
 
     if (amountKobo <= 0) {
@@ -511,7 +542,6 @@ const creditVendorOrder = async ({ order, session, event: providedEvent = null }
     description: "Order collected, net of fees",
     feeKobo: nairaToKobo(order.pricing.veraFeeNaira),
   });
-
 };
 
 /**
@@ -574,7 +604,58 @@ const creditStallFee = async ({ booking, event, session }) => {
   );
 };
 
+/**
+ * Credits the person who bought for a Together group when a friend pays back
+ * their share. Pending until the event ends plus the owner's usual delay, the
+ * same clock as ticket money, so a cancelled event can still hand it back.
+ */
+const creditTogetherPayback = async ({ share, event, session }) => {
+  const amountKobo = Math.round(Number(share.amountKobo || 0));
+
+  if (amountKobo <= 0) {
+    return;
+  }
+
+  const idempotencyKey = `together_payback:${share._id}`;
+
+  if (await WalletTransaction.exists({ idempotencyKey }).session(session)) {
+    return;
+  }
+
+  const owner = await User.findById(share.toUserId).select("payoutTier").session(session);
+  const settlementEligibleAt = new Date(
+    new Date(event.endsAt).getTime() + getSettlementDelayHours(owner?.payoutTier) * 60 * 60 * 1000,
+  );
+
+  const wallet = await getOrCreateWallet(share.toUserId, session);
+
+  await WalletTransaction.create(
+    [
+      {
+        walletId: wallet._id,
+        organizerUserId: share.toUserId,
+        type: "together_payback",
+        amountKobo,
+        bucket: "pending",
+        status: "pending_settlement",
+        settlementEligibleAt,
+        eventId: event._id,
+        idempotencyKey,
+        description: "A friend paid you back for their ticket",
+      },
+    ],
+    { session },
+  );
+
+  await OrganizerWallet.updateOne(
+    { _id: wallet._id },
+    { $inc: { pendingBalanceKobo: amountKobo, version: 1 } },
+    { session },
+  );
+};
+
 module.exports = {
+  creditTogetherPayback,
   nairaToKobo,
   buildPaginationMeta,
   getOrCreateWallet,

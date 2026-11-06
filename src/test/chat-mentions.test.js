@@ -160,9 +160,11 @@ test("the socket transport forwards everything the service reads", async () => {
     replyToMessageId: "r1",
     forwardedFromMessageId: "f1",
     mentionedUserIds: ["u1", "u2"],
+    eventMentionIds: ["e1"],
   });
 
   expect(built.mentionedUserIds).toEqual(["u1", "u2"]);
+  expect(built.eventMentionIds).toEqual(["e1"]);
   expect(built.message).toBe("hey @chat");
   expect(built.messageType).toBe("text");
   expect(built.metadata).toEqual({ a: 1 });

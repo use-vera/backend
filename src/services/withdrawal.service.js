@@ -7,12 +7,14 @@ const PayoutAccount = require("../models/payout-account.model");
 const { withMongoTransaction } = require("../utils/with-mongo-transaction");
 const { getOrCreateWallet, buildPaginationMeta } = require("./wallet.service");
 const { initiatePaystackTransfer } = require("./paystack.service");
+const transactionalEmails = require("./transactional-email.service");
 
 /**
  * Reverses a withdrawal that was reserved but never completed (provider
  * transfer failed to initiate, or Paystack later reports transfer.failed).
  * Idempotent: only acts on a withdrawal still in reserved/processing.
  * Calling it twice for the same withdrawal is a safe no-op the second time.
+ * Resolves to the withdrawal it reversed, or null when there was nothing to do.
  */
 const reverseWithdrawal = async ({ withdrawalId, reason }) =>
   withMongoTransaction(async (session) => {
@@ -28,7 +30,7 @@ const reverseWithdrawal = async ({ withdrawalId, reason }) =>
     );
 
     if (!withdrawal) {
-      return;
+      return null;
     }
 
     const wallet = await OrganizerWallet.findOneAndUpdate(
@@ -63,6 +65,8 @@ const reverseWithdrawal = async ({ withdrawalId, reason }) =>
       ],
       { session },
     );
+
+    return withdrawal;
   });
 
 /**
@@ -184,7 +188,7 @@ const requestWithdrawal = async ({ organizerUserId, amountKobo }) => {
 
 /** Called from the Paystack webhook dispatcher on transfer.success. */
 const finalizeWithdrawalSuccess = async ({ paystackReference }) => {
-  await withMongoTransaction(async (session) => {
+  const completed = await withMongoTransaction(async (session) => {
     const withdrawal = await Withdrawal.findOneAndUpdate(
       { paystackReference, status: "processing" },
       { $set: { status: "completed" } },
@@ -192,7 +196,7 @@ const finalizeWithdrawalSuccess = async ({ paystackReference }) => {
     );
 
     if (!withdrawal) {
-      return;
+      return null;
     }
 
     await OrganizerWallet.updateOne(
@@ -206,7 +210,21 @@ const finalizeWithdrawalSuccess = async ({ paystackReference }) => {
       },
       { session },
     );
+
+    return withdrawal;
   });
+
+  // Only the call that actually completed it emails, so a replayed webhook stays quiet.
+  if (completed) {
+    const payoutAccount = await PayoutAccount.findOne({ organizerUserId: completed.organizerUserId }).lean();
+    void transactionalEmails.withdrawalSent(completed.organizerUserId, {
+      amountKobo: completed.amountKobo,
+      bankName: payoutAccount?.bankName,
+      last4: String(payoutAccount?.accountNumber || "").slice(-4),
+      reference: completed.paystackReference,
+      sentAt: new Date(),
+    });
+  }
 };
 
 /** Called from the Paystack webhook dispatcher on transfer.failed/reversed. */
@@ -217,7 +235,12 @@ const finalizeWithdrawalFailure = async ({ paystackReference, reason }) => {
     return;
   }
 
-  await reverseWithdrawal({ withdrawalId: withdrawal._id, reason });
+  // A transfer that fails at the start is reported in the app; this one fails
+  // later, after they've left, so they hear about it by email.
+  const reversed = await reverseWithdrawal({ withdrawalId: withdrawal._id, reason });
+  if (reversed) {
+    void transactionalEmails.withdrawalFailed(reversed.organizerUserId, { amountKobo: reversed.amountKobo });
+  }
 };
 
 const listWithdrawals = async ({ organizerUserId, page = 1, limit = 20 }) => {

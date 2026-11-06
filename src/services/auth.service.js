@@ -326,6 +326,7 @@ const requestSignInCode = async ({ email, purpose = "sign-in" }) => {
         : signInCodeEmail;
   const message = template({
     code,
+    email,
     expiresInMinutes: CODE_TTL_MS / 60000,
   });
 

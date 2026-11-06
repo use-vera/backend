@@ -48,6 +48,51 @@ const nowLine = (now) =>
     hour12: true,
   });
 
+/* ---------- Calendar (free/busy only) ---------- */
+
+/* Evenings are what Vera plans around: 5 PM to 4 AM, Lagos time. */
+const EVENING_START_HOUR = 17;
+const EVENING_HOURS = 11;
+const CALENDAR_DAYS = 7;
+/* An event with no end time is assumed to run this long when checking clashes. */
+const ASSUMED_EVENT_MS = 3 * 60 * 60 * 1000;
+
+const toBusy = (blocks = []) =>
+  blocks
+    .map((block) => ({ start: new Date(block.start), end: new Date(block.end) }))
+    .filter((block) => block.end > block.start)
+    .sort((a, b) => a.start - b.start);
+
+const overlapsBusy = (start, end, busy) => busy.some((block) => block.start < end && block.end > start);
+
+const clashesWith = (card, busy) => {
+  if (!busy?.length || !card.startsAt) return false;
+  const start = new Date(card.startsAt);
+  const end = card.endsAt ? new Date(card.endsAt) : new Date(start.getTime() + ASSUMED_EVENT_MS);
+  return overlapsBusy(start, end, busy);
+};
+
+/**
+ * "Fri 31 Oct: busy 6 PM to 9 PM" for each evening this week with something
+ * on, so the model knows when the person is free without ever seeing what
+ * their appointments are.
+ */
+const calendarLines = (busy, now) => {
+  const local = lagosDate(now);
+  const todayMidnight = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) - LAGOS_OFFSET_MS;
+  const evenings = [];
+  for (let day = 0; day < CALENDAR_DAYS; day += 1) {
+    const start = new Date(todayMidnight + day * DAY_MS + EVENING_START_HOUR * 60 * 60 * 1000);
+    const end = new Date(start.getTime() + EVENING_HOURS * 60 * 60 * 1000);
+    const label = lagosDate(start).toLocaleString("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" });
+    const blocks = busy
+      .filter((block) => block.start < end && block.end > start)
+      .map((block) => `${timeOnly(block.start < start ? start : block.start)} to ${timeOnly(block.end > end ? end : block.end)}`);
+    evenings.push(blocks.length ? `${label} evening: busy ${blocks.join(", ")}` : `${label} evening: free`);
+  }
+  return evenings;
+};
+
 const isPremium = (user, now) =>
   user?.subscriptionTier === "premium" && Boolean(user.premiumExpiresAt) && new Date(user.premiumExpiresAt) > now;
 
@@ -133,7 +178,7 @@ const spentThisWeek = async (userId, now) => {
  * What Vera knows for this reply, both as lines for the model and as the
  * chips under her answer. Only what the person allowed is gathered.
  */
-const buildContext = async ({ userId, settings, location, now }) => {
+const buildContext = async ({ userId, settings, location, busy, now }) => {
   const inputs = [];
   const lines = [`Now: ${nowLine(now)} in Lagos.`];
   const sees = settings.sees || {};
@@ -160,7 +205,17 @@ const buildContext = async ({ userId, settings, location, now }) => {
     lines.push(`Budget: ${naira(left)} left of ${naira(settings.weeklyBudgetNaira)} this week. Prefer events within it and say so if nothing fits.`);
   }
 
-  return { inputs, lines, near };
+  /* Only when they've switched it on: the phone may still send times after it's turned off here. */
+  const calendar = sees.calendar && Array.isArray(busy) ? toBusy(busy) : null;
+  if (calendar) {
+    inputs.push("Your calendar");
+    lines.push(
+      `Calendar, free/busy only (you never see what the appointments are): ${calendarLines(calendar, now).join("; ")}.`,
+      "Search results mark events that overlap a busy time with clashesWithCalendar. Prefer events that don't clash; if you pick one that does, say it clashes.",
+    );
+  }
+
+  return { inputs, lines, near, busy: calendar };
 };
 
 /* ---------- Tools ---------- */
@@ -263,7 +318,7 @@ const whenOf = (startsAt) =>
 const placeOf = (card) => card.eventCenter?.name || card.address || card.state || "";
 
 /* What the model sees for an event: enough to choose and explain, nothing private. */
-const compactCard = (card) => ({
+const compactCard = (card, busy = null) => ({
   eventId: toIdString(card._id),
   name: card.name,
   status: card.isLive ? "live now" : "upcoming",
@@ -278,6 +333,7 @@ const compactCard = (card) => ({
   matchScore: card.match?.score ?? null,
   matchReasons: card.match?.reasons || [],
   soldOut: card.remainingTickets === 0 && card.expectedTickets > 0,
+  clashesWithCalendar: clashesWith(card, busy) || undefined,
 });
 
 const fallbackWhy = (card) => {
@@ -288,7 +344,7 @@ const fallbackWhy = (card) => {
   return card.match?.reasons?.[0] || "Coming up soon";
 };
 
-const toPick = (card, why) => ({
+const toPick = (card, why, busy = null) => ({
   eventId: card._id,
   name: card.name,
   imageUrl: card.imageUrl || "",
@@ -301,6 +357,7 @@ const toPick = (card, why) => ({
   matchScore: card.match?.score ?? null,
   /* A live event's card says so, whatever the model wrote ("coming up soon" would be wrong). */
   why: card.isLive ? fallbackWhy(card) : String(why || "").trim().slice(0, 80) || fallbackWhy(card),
+  clashesWithCalendar: clashesWith(card, busy),
 });
 
 /* The cheapest ticket type on sale right now: what "hold me one" most likely means. */
@@ -520,7 +577,7 @@ const runTool = async ({ call, userId, settings, context, state }) => {
     ].filter(Boolean);
     return JSON.stringify({
       note: notes.length ? notes.join(" ") : undefined,
-      events: result.items.map(compactCard),
+      events: result.items.map((card) => compactCard(card, context.busy)),
     });
   }
 
@@ -554,7 +611,7 @@ const runTool = async ({ call, userId, settings, context, state }) => {
       .map((pick) => ({ card: state.seen.get(String(pick?.eventId || "")), why: pick?.why }))
       .filter((pick) => pick.card)
       .slice(0, MAX_PICKS);
-    state.picks = picks.map(({ card, why }) => toPick(card, why));
+    state.picks = picks.map(({ card, why }) => toPick(card, why, context.busy));
     return picks.length
       ? `Showing ${picks.length} picks. Now reply in one or two short sentences.`
       : "None of those ids came from search_events. Use eventId values from the search results.";
@@ -567,7 +624,7 @@ const runTool = async ({ call, userId, settings, context, state }) => {
 
 const systemPrompt = (lines) =>
   [
-    "You are Vera, a warm, brief night-out planner inside the Vera events app in Lagos, Nigeria.",
+    "You are Vera, a warm, brief planner for going out, day or night, inside the Vera events app in Lagos, Nigeria.",
     "Rules:",
     "- Whenever the person asks about events, dates, days or plans, call search_events first, even if you searched earlier in the chat.",
     "- Only mention events returned by search_events. Never invent events, names, prices, dates or times.",
@@ -697,11 +754,11 @@ const cardsFor = ({ reply, state, known }) => {
   };
 
   for (const entry of mentionedIn(reply, known)) {
-    add(entry.card ? toPick(entry.card, chosenWhy.get(toIdString(entry.card._id))) : refreshSnapshot(entry.pick));
+    add(entry.card ? toPick(entry.card, chosenWhy.get(toIdString(entry.card._id)), state.busy) : refreshSnapshot(entry.pick));
   }
   for (const pick of state.picks || []) add(pick);
   if (!cards.length) {
-    for (const card of [...state.seen.values()].slice(0, MAX_PICKS)) add(toPick(card));
+    for (const card of [...state.seen.values()].slice(0, MAX_PICKS)) add(toPick(card, undefined, state.busy));
   }
   return cards.slice(0, MAX_CARDS);
 };
@@ -730,7 +787,7 @@ const clearMessages = async ({ userId }) => {
   return { cleared: true };
 };
 
-const sendMessage = async ({ userId, text, location, now = new Date() }) => {
+const sendMessage = async ({ userId, text, location, busy, now = new Date() }) => {
   const [settings, user] = await Promise.all([loadSettings(userId), User.findById(userId).select("subscriptionTier premiumExpiresAt").lean()]);
   if (!settings.enabled) {
     throw new ApiError(403, "Vera is turned off. Turn her back on in Settings.", null, "VERA_OFF");
@@ -741,13 +798,13 @@ const sendMessage = async ({ userId, text, location, now = new Date() }) => {
 
   try {
     const [context, history] = await Promise.all([
-      buildContext({ userId, settings, location, now }),
+      buildContext({ userId, settings, location, busy, now }),
       VeraMessage.find({ userId }).sort({ createdAt: -1 }).limit(HISTORY_FOR_MODEL).lean(),
     ]);
 
     history.reverse();
     const conversation = [...historyForModel(history), { role: "user", content: text }];
-    const state = { seen: new Map(), picks: null, actions: [], refusals: [], history, userId };
+    const state = { seen: new Map(), picks: null, actions: [], refusals: [], history, userId, busy: context.busy };
     let reply = "";
     let corrected = false;
 
@@ -815,7 +872,7 @@ const sendMessage = async ({ userId, text, location, now = new Date() }) => {
       if (picks.length >= MAX_CARDS || picks.some((pick) => toIdString(pick.eventId) === id)) continue;
       const card = state.seen.get(id);
       const entry = card ? null : [...known.values()].find((item) => item.pick && toIdString(item.pick.eventId) === id);
-      if (card) picks.push(toPick(card));
+      if (card) picks.push(toPick(card, undefined, state.busy));
       else if (entry) picks.push(entry.pick);
     }
     if (!reply) {

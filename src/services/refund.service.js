@@ -2,12 +2,14 @@ const ApiError = require("../utils/api-error");
 const EventTicket = require("../models/event-ticket.model");
 const EventAddOnPurchase = require("../models/event-add-on-purchase.model");
 const EventVendor = require("../models/event-vendor.model");
+const TogetherShare = require("../models/together-share.model");
 const Event = require("../models/event.model");
 const OrganizerWallet = require("../models/organizer-wallet.model");
 const WalletTransaction = require("../models/wallet-transaction.model");
 const { withMongoTransaction } = require("../utils/with-mongo-transaction");
 const { nairaToKobo } = require("./wallet.service");
 const { returnPaystackPayment } = require("./payment-refund.service");
+const transactionalEmails = require("./transactional-email.service");
 
 const toIdString = (value) => String(value?._id || value || "");
 
@@ -18,7 +20,9 @@ const toIdString = (value) => String(value?._id || value || "");
  * settled yet, or from availableBalanceKobo (going into owingBalanceKobo if
  * insufficient) if it has.
  */
-const refundTicket = async ({ ticketId, actorUserId, reason }) => {
+/* `notifyBuyer: false` is for the cancellation sweep, which sends its own combined
+   "event cancelled, here's your refund" email instead of this one. */
+const refundTicket = async ({ ticketId, actorUserId, reason, notifyBuyer = true }) => {
   const ticket = await EventTicket.findById(ticketId);
 
   if (!ticket) {
@@ -220,6 +224,16 @@ const refundTicket = async ({ ticketId, actorUserId, reason }) => {
   /* Its add-ons follow it. Safe to run twice: rows already refunded are
      skipped, which is what keeps the cancellation sweep idempotent. */
   await refundTicketAddOns({ ticketId, reason });
+
+  if (notifyBuyer && Number(ticket.totalPriceNaira || 0) > 0) {
+    const event = await Event.findById(ticket.eventId).select("name").lean();
+    void transactionalEmails.refundIssued(ticket.buyerUserId, {
+      eventName: event?.name || "your event",
+      refundNaira: Number(ticket.totalPriceNaira),
+      reason: String(reason || "").slice(0, 200),
+      what: Number(ticket.quantity || 1) > 1 ? `your ${ticket.quantity} tickets` : "your ticket",
+    });
+  }
 
   return claimedTicket;
 };
@@ -474,4 +488,101 @@ const refundStallFee = async ({ bookingId, reason }) => {
   return { bookingId: toIdString(booking), amountNaira };
 };
 
-module.exports = { refundTicket, refundAddOnPurchase, refundTicketAddOns, refundStallFee };
+/**
+ * Gives a friend back what they paid to cover their Together share when the
+ * event is called off. The whole charge goes back, the Paystack fee on top
+ * included, through the payment they made. The payback comes out of the
+ * buyer's wallet the same way a stall fee does, into `owing` if needed.
+ */
+const refundTogetherShare = async ({ shareId, reason }) => {
+  /* Claimed before the provider call, so two sweeps cannot both refund. */
+  const share = await TogetherShare.findOneAndUpdate(
+    { _id: shareId, status: "paid" },
+    { $set: { status: "refunded", refundedAt: new Date() } },
+    { new: true },
+  );
+
+  if (!share) {
+    return null;
+  }
+
+  try {
+    await returnPaystackPayment({
+      reference: share.paymentReference,
+      amountKobo: share.chargedKobo || share.amountKobo,
+    });
+  } catch (error) {
+    await TogetherShare.updateOne(
+      { _id: share._id },
+      { $set: { status: "paid" }, $unset: { refundedAt: "" } },
+    );
+
+    throw error;
+  }
+
+  await withMongoTransaction(async (session) => {
+    const payback = await WalletTransaction.findOne({
+      type: "together_payback",
+      idempotencyKey: `together_payback:${share._id}`,
+    }).session(session);
+
+    if (!payback) {
+      return;
+    }
+
+    const wallet = await OrganizerWallet.findById(payback.walletId).session(session);
+
+    if (!wallet) {
+      return;
+    }
+
+    const amountKobo = payback.amountKobo;
+    const isPreSettlement = payback.status === "pending_settlement";
+
+    if (isPreSettlement) {
+      await OrganizerWallet.updateOne(
+        { _id: wallet._id },
+        { $inc: { pendingBalanceKobo: -amountKobo, lifetimeRefundedKobo: amountKobo, version: 1 } },
+        { session },
+      );
+      await WalletTransaction.updateOne({ _id: payback._id }, { $set: { status: "reversed" } }, { session });
+    } else {
+      const shortfallKobo = Math.max(0, amountKobo - wallet.availableBalanceKobo);
+
+      await OrganizerWallet.updateOne(
+        { _id: wallet._id },
+        {
+          $inc: {
+            availableBalanceKobo: -(amountKobo - shortfallKobo),
+            owingBalanceKobo: shortfallKobo,
+            lifetimeRefundedKobo: amountKobo,
+            version: 1,
+          },
+        },
+        { session },
+      );
+    }
+
+    await WalletTransaction.create(
+      [
+        {
+          walletId: wallet._id,
+          organizerUserId: payback.organizerUserId,
+          type: "refund",
+          amountKobo: -amountKobo,
+          bucket: isPreSettlement ? "pending" : "available",
+          status: "completed",
+          eventId: share.eventId,
+          sourceTransactionId: payback._id,
+          idempotencyKey: `refund:together_payback:${share._id}`,
+          description: `Friend's payback returned: ${String(reason || "event cancelled").slice(0, 200)}`,
+        },
+      ],
+      { session },
+    );
+  });
+
+  return { shareId: String(share._id), amountKobo: share.chargedKobo || share.amountKobo };
+};
+
+module.exports = { refundTicket, refundAddOnPurchase, refundTicketAddOns, refundStallFee, refundTogetherShare };

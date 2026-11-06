@@ -338,6 +338,7 @@ const initializeSocketServer = ({ httpServer }) => {
             metadata: payload?.metadata,
             replyToMessageId: payload?.replyToMessageId,
             forwardedFromMessageId: payload?.forwardedFromMessageId,
+            eventMentionIds: Array.isArray(payload?.eventMentionIds) ? payload.eventMentionIds : undefined,
           },
         });
 

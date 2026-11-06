@@ -165,7 +165,7 @@ const unblockUser = async ({ userId, targetUserId }) => {
 const listBlockedUsers = async ({ userId }) => {
   const rows = await UserBlock.find({ blockerUserId: userId })
     .sort({ createdAt: -1 })
-    .populate("blockedUserId", "fullName handle avatarUrl")
+    .populate("blockedUserId", "fullName handle avatarUrl verificationBadge")
     .lean();
 
   return {
@@ -176,6 +176,7 @@ const listBlockedUsers = async ({ userId }) => {
         fullName: row.blockedUserId.fullName,
         handle: row.blockedUserId.handle || "",
         avatarUrl: row.blockedUserId.avatarUrl || "",
+        verificationBadge: row.blockedUserId.verificationBadge || undefined,
         blockedAt: row.createdAt,
       })),
   };

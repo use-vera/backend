@@ -15,6 +15,8 @@ const veraPickSchema = new Schema(
     isPaid: { type: Boolean, default: false },
     matchScore: { type: Number, default: null },
     why: { type: String, default: "" },
+    /* It overlapped a busy time on the person's calendar when Vera picked it. */
+    clashesWithCalendar: { type: Boolean, default: false },
   },
   { _id: false },
 );

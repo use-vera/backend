@@ -26,6 +26,7 @@ const sendVeraMessageController = asyncHandler(async (req, res) => {
     userId: req.auth.userId,
     text: req.body.text,
     location: req.body.location,
+    busy: req.body.busy,
   });
   res.status(201).json({ success: true, message: "Vera replied", data: result });
 });

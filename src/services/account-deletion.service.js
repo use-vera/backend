@@ -31,6 +31,7 @@ const AttendanceSession = require("../models/attendance-session.model");
 const EventView = require("../models/event-view.model");
 const PayoutAccount = require("../models/payout-account.model");
 const { revokeOtherSessions } = require("./session.service");
+const transactionalEmails = require("./transactional-email.service");
 
 /* Lazy: auth.service pulls in workspaces and subscriptions. */
 const authCodes = () => require("./auth.service");
@@ -222,6 +223,7 @@ const deleteMyAccount = async ({ userId, code }) => {
         preferences: {},
         deletedAt: now,
         purgedAt: null,
+        deletionNoticeEmail: originalEmail,
       },
       $unset: { handle: "" },
     },
@@ -240,6 +242,8 @@ const deleteMyAccount = async ({ userId, code }) => {
     ),
     EmailOtp.deleteMany({ email: originalEmail }),
   ]);
+
+  void transactionalEmails.accountDeletionStarted(originalEmail, { eraseWithinDays: ERASE_WITHIN_DAYS });
 
   return { deleted: true, eraseWithinDays: ERASE_WITHIN_DAYS };
 };
@@ -281,7 +285,12 @@ const purgeDeletedAccount = async (userId) => {
     ),
   ]);
 
-  await User.updateOne({ _id: userId }, { $set: { purgedAt: new Date() } });
+  /* The last thing we knew about them: used once for the final email, then gone. */
+  const notice = await User.findById(userId).select("+deletionNoticeEmail").lean();
+  await User.updateOne({ _id: userId }, { $set: { purgedAt: new Date() }, $unset: { deletionNoticeEmail: "" } });
+  if (notice?.deletionNoticeEmail) {
+    void transactionalEmails.accountDeletionCompleted(notice.deletionNoticeEmail);
+  }
 };
 
 /** For the monitor: purge every deleted account not yet purged. */

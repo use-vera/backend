@@ -3,6 +3,9 @@ const env = require("../config/env");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
 const EventVendor = require("../models/event-vendor.model");
+const User = require("../models/user.model");
+const Workspace = require("../models/workspace.model");
+const transactionalEmails = require("./transactional-email.service");
 const { refundTicket, refundStallFee } = require("./refund.service");
 const { readPaystackError } = require("./payment-refund.service");
 const { cancelResaleSalesForEvent } = require("./resale-payout.service");
@@ -76,6 +79,10 @@ const sweepEventVendors = async (event) => {
 };
 
 const sweepEventTickets = async (event) => {
+  const host = await User.findById(event.organizerUserId).select("fullName").lean();
+  const workspace = event.workspaceId ? await Workspace.findById(event.workspaceId).select("name").lean() : null;
+  const organizerName = workspace?.name || host?.fullName || "";
+
   const tickets = await EventTicket.find({
     eventId: event._id,
     status: { $in: ["paid", "used"] },
@@ -89,6 +96,16 @@ const sweepEventTickets = async (event) => {
         ticketId: ticket._id,
         actorUserId: event.organizerUserId,
         reason: event.cancellationReason || "Event cancelled",
+        notifyBuyer: false,
+      });
+
+      /* One email that says it's off and what's coming back, once the refund has actually gone out. */
+      void transactionalEmails.eventCancelled(ticket.buyerUserId, {
+        eventName: event.name,
+        startsAt: event.startsAt,
+        organizerName,
+        reason: event.cancellationReason || "",
+        refundNaira: Number(ticket.totalPriceNaira || 0),
       });
 
       await createNotification({
@@ -110,6 +127,12 @@ const sweepEventTickets = async (event) => {
   }
 
   await sweepEventVendors(event);
+
+  /* Friends who paid back a Together share get it back; nothing more is owed. */
+  await require("./together.service").settleSharesForCancelledEvent({
+    eventId: event._id,
+    reason: event.cancellationReason || "Event cancelled",
+  });
 
   /* Resales on this event: no payouts, and sellers get back what they paid. */
   try {

@@ -6,7 +6,7 @@ const EventAddOnPurchase = require("../models/event-add-on-purchase.model");
 const Event = require("../models/event.model");
 const TicketTransfer = require("../models/ticket-transfer.model");
 const User = require("../models/user.model");
-const { buildTicketCode, buildTicketBarcodeValue } = require("./event.service");
+const { buildTicketCode, buildTicketBarcodeValue, hasEventEnded, currentOccurrenceEndsAt } = require("./event.service");
 const { createNotification } = require("./notification.service");
 const { dispatchEmail } = require("./email.service");
 const { ticketSent } = require("../emails/transfer.emails");
@@ -66,14 +66,14 @@ const createTicketTransfer = async ({ ticketId, actorUserId, payload }) => {
     throw new ApiError(409, "This ticket is up for resale. Take it down before sending it.", null, "TRANSFER_WHILE_LISTED");
   }
 
-  const event = await Event.findById(ticket.eventId).select("name startsAt endsAt status");
+  const event = await Event.findById(ticket.eventId).select("name startsAt endsAt status recurrence");
 
   if (!event || event.status === "cancelled") {
     throw new ApiError(409, "This event was cancelled, so its tickets can't be sent", null, "TRANSFER_NOT_ALLOWED");
   }
 
   const now = new Date();
-  if (event.endsAt && new Date(event.endsAt).getTime() <= now.getTime()) {
+  if (hasEventEnded(event, now)) {
     throw new ApiError(409, "This event has ended", null, "TRANSFER_NOT_ALLOWED");
   }
 
@@ -101,7 +101,8 @@ const createTicketTransfer = async ({ ticketId, actorUserId, payload }) => {
 
   const token = crypto.randomBytes(24).toString("base64url");
   const expiresAt = new Date(
-    Math.min(now.getTime() + TRANSFER_LIFETIME_MS, new Date(event.endsAt || now.getTime() + TRANSFER_LIFETIME_MS).getTime()),
+    /* A send lapses when the current date ends: for a recurring event, the next one, not the first. */
+    Math.min(now.getTime() + TRANSFER_LIFETIME_MS, (currentOccurrenceEndsAt(event, now) || new Date(now.getTime() + TRANSFER_LIFETIME_MS)).getTime()),
   );
 
   let transfer;

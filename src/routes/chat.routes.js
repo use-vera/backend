@@ -12,6 +12,7 @@ const {
   messageIdParamsSchema,
   sendDirectMessageSchema,
   updateDirectMessageSchema,
+  eventMentionQuerySchema,
 } = require("../validations/chat.validation");
 const {
   listChatThreadsController,
@@ -22,6 +23,7 @@ const {
   sendDirectMessageController,
   updateDirectMessageController,
   deleteDirectMessageController,
+  searchEventMentionsController,
 } = require("../controllers/chat.controller");
 
 const router = express.Router();
@@ -31,6 +33,8 @@ router.use(authMiddleware);
 router.get("/unread-summary", getChatUnreadSummaryController);
 router.get("/threads", validateQuery(paginationQuerySchema), listChatThreadsController);
 router.get("/users", validateQuery(paginationQuerySchema), discoverChatUsersController);
+/* What "#" suggests in any chat composer: upcoming published events. */
+router.get("/event-mentions", validateQuery(eventMentionQuerySchema), searchEventMentionsController);
 router.post("/direct", validateBody(startDirectConversationSchema), startDirectConversationController);
 router.get(
   "/direct/:conversationId/messages",

@@ -1,7 +1,8 @@
 const asyncHandler = require("../utils/async-handler");
-const { getHome, getTrending, listDiscover, getMapPins, getBusiestHours } = require("../services/discover.service");
+const { getHome, getTrending, listDiscover, calendarMonth, getMapPins, getBusiestHours } = require("../services/discover.service");
 const {
   discoverListQuerySchema,
+  calendarMonthQuerySchema,
   trendingQuerySchema,
   mapPinsQuerySchema,
 } = require("../validations/event.validation");
@@ -27,6 +28,10 @@ const listDiscoverController = asyncHandler(async (req, res) =>
   respond(res, "Events fetched", await listDiscover({ userId: req.auth.userId, ...parsedQuery(discoverListQuerySchema, req) })),
 );
 
+const getCalendarMonthController = asyncHandler(async (req, res) =>
+  respond(res, "Calendar fetched", await calendarMonth(parsedQuery(calendarMonthQuerySchema, req))),
+);
+
 const getMapPinsController = asyncHandler(async (req, res) =>
   respond(res, "Pins fetched", await getMapPins({ userId: req.auth.userId, ...parsedQuery(mapPinsQuerySchema, req) })),
 );
@@ -39,6 +44,7 @@ module.exports = {
   getHomeController,
   getTrendingController,
   listDiscoverController,
+  getCalendarMonthController,
   getMapPinsController,
   getBusiestHoursController,
 };

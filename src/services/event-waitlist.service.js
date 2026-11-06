@@ -2,7 +2,7 @@ const ApiError = require("../utils/api-error");
 const Event = require("../models/event.model");
 const EventTicket = require("../models/event-ticket.model");
 const EventWaitlistEntry = require("../models/event-waitlist-entry.model");
-const { countReservedTickets, resolveTicketSalesAccess } = require("./event.service");
+const { countReservedTickets, resolveTicketSalesAccess, hasEventEnded } = require("./event.service");
 const { createNotification } = require("./notification.service");
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -51,7 +51,7 @@ const joinWaitlist = async ({ eventId, actorUserId }) => {
   if (!event || event.status !== "published") {
     throw new ApiError(404, "Event not found");
   }
-  if (event.endsAt && new Date(event.endsAt).getTime() <= Date.now()) {
+  if (hasEventEnded(event)) {
     throw new ApiError(409, "This event has ended");
   }
   if (await holdsTicket(event._id, actorUserId)) {
@@ -108,7 +108,7 @@ const processWaitlists = async ({ now = new Date() } = {}) => {
       }
     }
 
-    const ended = event.endsAt && new Date(event.endsAt).getTime() <= now.getTime();
+    const ended = hasEventEnded(event, now);
     if (ended || event.status === "cancelled") {
       await EventWaitlistEntry.updateMany(
         { eventId, status: { $in: ["waiting", "notified"] } },

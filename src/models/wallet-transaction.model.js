@@ -40,6 +40,8 @@ const walletTransactionSchema = new Schema(
         "vendor_revenue_share",
         // What a vendor paid the organizer for their stall.
         "vendor_stall_fee",
+        // A friend's payback for a ticket the owner sent them in a Together group.
+        "together_payback",
         "platform_fee",
         "refund",
         "chargeback",

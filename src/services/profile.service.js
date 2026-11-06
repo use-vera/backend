@@ -254,7 +254,7 @@ const searchPeople = async ({ viewerUserId, q, limit = 10 }) => {
     deletedAt: null,
     $or: [{ fullName: pattern }, { handle: pattern }],
   })
-    .select("fullName handle avatarUrl title")
+    .select("fullName handle avatarUrl title verificationBadge")
     .limit(Math.min(20, Number(limit) || 10))
     .lean();
 
@@ -265,6 +265,7 @@ const searchPeople = async ({ viewerUserId, q, limit = 10 }) => {
       handle: user.handle || "",
       avatarUrl: user.avatarUrl || "",
       title: user.title || "",
+      verificationBadge: user.verificationBadge || undefined,
     })),
   };
 };

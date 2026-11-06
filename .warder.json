@@ -1,5 +1,5 @@
 {
-  "project": "vera-tickets",
+  "project": "vera",
   "environment": "development",
   "runtimeUrl": "https://warder-runtime.onrender.com"
 }

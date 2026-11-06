@@ -27,6 +27,8 @@ const paymentAttemptSchema = new Schema(
         "vendor_order",
         // What a vendor pays an organizer for their stall.
         "vendor_stall_fee",
+        // A friend paying back their share of a ticket from a Together group.
+        "together_share",
       ],
       required: true,
       index: true,
@@ -59,6 +61,13 @@ const paymentAttemptSchema = new Schema(
     resaleSourceTicketId: {
       type: Schema.Types.ObjectId,
       ref: "EventTicket",
+      default: null,
+      index: true,
+    },
+    /* For a "together_share" payment: whose share this pays. */
+    togetherShareId: {
+      type: Schema.Types.ObjectId,
+      ref: "TogetherShare",
       default: null,
       index: true,
     },

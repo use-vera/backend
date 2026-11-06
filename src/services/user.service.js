@@ -189,6 +189,7 @@ const completeOnboarding = async (userId) => {
   if (!user.onboardingCompletedAt) {
     user.onboardingCompletedAt = new Date();
     await user.save();
+    void require("./transactional-email.service").welcome(user._id);
   }
 
   return sanitizeUser(user);

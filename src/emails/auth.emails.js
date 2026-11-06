@@ -1,10 +1,11 @@
-const { COLORS, muted, paragraph, renderEmail, renderText } = require("./layout");
+const { codeBlock, muted, paragraph, renderEmail, renderText } = require("./layout");
 
 /**
  * The emailed sign-in code. Pure: returns { subject, html, text } and sends
  * nothing, so it can be rendered in a test.
  */
-const signInCode = ({ code, expiresInMinutes }) => {
+const signInCode = ({ code, email, expiresInMinutes }) => {
+  const sentTo = email ? `Sent to ${email} from a sign-in request.` : undefined;
   const heading = "here's your code.";
   const spaced = `${code.slice(0, 3)} ${code.slice(3)}`;
 
@@ -14,19 +15,20 @@ const signInCode = ({ code, expiresInMinutes }) => {
     html: renderEmail({
       previewText: `${spaced} — enter it in the Vera app to sign in.`,
       heading,
-      footerNote: "Nobody at Vera will ever ask you for this code.",
+      footerNote: sentTo,
       bodyHtml: [
         paragraph(
           `Enter this in the Vera app to sign in. It works once and expires in ${expiresInMinutes} minutes.`,
         ),
-        `<div style="margin: 22px 0; padding: 22px; border-radius: 14px; background: ${COLORS.ink}; text-align: center; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 36px; font-weight: 800; letter-spacing: 0.24em; color: #f5f3ef;">${spaced}</div>`,
+        codeBlock(code),
         muted(
-          "Didn't ask for this? Ignore this email. Nobody can sign in without the code.",
+          "Didn't ask for this? Ignore this email. Nobody can sign in without the code, and we'll never ask you to share it.",
         ),
       ].join(""),
     }),
     text: renderText({
       heading,
+      footerNote: sentTo,
       lines: [
         `Your Vera code is ${spaced}.`,
         `It works once and expires in ${expiresInMinutes} minutes.`,
@@ -38,7 +40,8 @@ const signInCode = ({ code, expiresInMinutes }) => {
 };
 
 /** The code that confirms a new sign-in email. Sent to the new address. */
-const emailChangeCode = ({ code, expiresInMinutes }) => {
+const emailChangeCode = ({ code, email, expiresInMinutes }) => {
+  const sentTo = email ? `Sent to ${email} because someone asked to make it their Vera sign-in email.` : undefined;
   const heading = "confirm your new email.";
   const spaced = `${code.slice(0, 3)} ${code.slice(3)}`;
 
@@ -47,13 +50,13 @@ const emailChangeCode = ({ code, expiresInMinutes }) => {
     html: renderEmail({
       previewText: `${spaced} — enter it in Vera to make this your sign-in email.`,
       heading,
-      footerNote: "Nobody at Vera will ever ask you for this code.",
+      footerNote: sentTo,
       bodyHtml: [
         paragraph(
           `Enter this in the Vera app to make this address your sign-in email. It works once and expires in ${expiresInMinutes} minutes.`,
         ),
-        `<div style="margin: 22px 0; padding: 22px; border-radius: 14px; background: ${COLORS.ink}; text-align: center; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 36px; font-weight: 800; letter-spacing: 0.24em; color: #f5f3ef;">${spaced}</div>`,
-        muted("Didn't ask for this? Ignore this email. Nothing changes without the code."),
+        codeBlock(code),
+        muted("Didn't ask for this? Ignore this email. Nothing changes without the code, and we'll never ask you to share it."),
       ].join(""),
     }),
     text: renderText({
@@ -69,7 +72,8 @@ const emailChangeCode = ({ code, expiresInMinutes }) => {
 };
 
 /** The code that confirms deleting the account. */
-const accountDeleteCode = ({ code, expiresInMinutes }) => {
+const accountDeleteCode = ({ code, email, expiresInMinutes }) => {
+  const sentTo = email ? `Sent to ${email} from a request to delete this Vera account.` : undefined;
   const heading = "delete your account?";
   const spaced = `${code.slice(0, 3)} ${code.slice(3)}`;
 
@@ -78,13 +82,13 @@ const accountDeleteCode = ({ code, expiresInMinutes }) => {
     html: renderEmail({
       previewText: `${spaced} — enter it in Vera to delete your account.`,
       heading,
-      footerNote: "Nobody at Vera will ever ask you for this code.",
+      footerNote: sentTo,
       bodyHtml: [
         paragraph(
           `Enter this in the Vera app to delete your account for good. It works once and expires in ${expiresInMinutes} minutes.`,
         ),
-        `<div style="margin: 22px 0; padding: 22px; border-radius: 14px; background: ${COLORS.ink}; text-align: center; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 36px; font-weight: 800; letter-spacing: 0.24em; color: #f5f3ef;">${spaced}</div>`,
-        muted("Didn't ask for this? Ignore this email and your account stays as it is."),
+        codeBlock(code),
+        muted("Didn't ask for this? Ignore this email and your account stays as it is. We'll never ask you to share this code."),
       ].join(""),
     }),
     text: renderText({

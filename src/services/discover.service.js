@@ -158,7 +158,7 @@ const loadFriendsGoing = async (eventIds, sharingFollowing) => {
     status: { $in: ["paid", "used"] },
   })
     .select("eventId buyerUserId")
-    .populate("buyerUserId", "fullName avatarUrl handle")
+    .populate("buyerUserId", "fullName avatarUrl handle verificationBadge")
     .lean();
 
   for (const ticket of tickets) {
@@ -170,6 +170,7 @@ const loadFriendsGoing = async (eventIds, sharingFollowing) => {
       fullName: ticket.buyerUserId.fullName,
       handle: ticket.buyerUserId.handle || "",
       avatarUrl: ticket.buyerUserId.avatarUrl || "",
+      verificationBadge: ticket.buyerUserId.verificationBadge || undefined,
     });
     map.set(key, people);
   }
@@ -429,13 +430,27 @@ const WHEN_WINDOWS = {
 /* How far ahead to load candidates so a window is fully covered. */
 const horizonFor = (when) => (when === "next_month" ? 62 : 30);
 
+/* The calendar looks this far ahead; further out, plans are too thin to browse. */
+const CALENDAR_MAX_DAYS_AHEAD = 180;
+
+/* "2026-11-14" as that whole day in Lagos, clipped to now so it never lists what's over. */
+const dayWindow = (dateKey, now) => {
+  const [year, month, day] = String(dateKey).split("-").map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day) - LAGOS_OFFSET_MS);
+  return [start < now ? now : start, new Date(start.getTime() + DAY_MS)];
+};
+
+/* Days from now to the end of a Lagos day, for loading enough candidates. */
+const daysUntil = (end, now) => Math.min(CALENDAR_MAX_DAYS_AHEAD + 1, Math.max(1, Math.ceil((end.getTime() - now.getTime()) / DAY_MS)));
+
 /**
  * The filtered list behind Discover's chips and "all →": a time window,
  * a price ceiling, free only, friends going, a scene, or what's running at
  * a given moment. Best match first unless asked for soonest or cheapest.
  */
-const filterEntries = ({ entries, now, when = "all", priceMax, free, friendsOnly, category, runningAt, friendsMap }) => {
-  const [start, end] = (WHEN_WINDOWS[when] || WHEN_WINDOWS.all)(now);
+const filterEntries = ({ entries, now, when = "all", on, priceMax, free, friendsOnly, category, runningAt, friendsMap }) => {
+  /* A calendar day wins over the "when" chips. */
+  const [start, end] = on ? dayWindow(on, now) : (WHEN_WINDOWS[when] || WHEN_WINDOWS.all)(now);
   const moment = runningAt ? new Date(runningAt) : null;
 
   return entries.filter(({ event, occurrence }) => {
@@ -457,7 +472,9 @@ const sortEntries = (entries, sort, signals, friendsMap) => {
 
 const listDiscover = async ({ userId, page = 1, limit = 20, sort = "match", state, ...filters }) => {
   const now = new Date();
-  const [signals, candidates] = await Promise.all([loadViewerSignals(userId), loadCandidates({ now, state })]);
+  /* A calendar day can be months out: load far enough ahead to cover it. */
+  const horizonDays = filters.on ? Math.max(30, daysUntil(dayWindow(filters.on, now)[1], now)) : 30;
+  const [signals, candidates] = await Promise.all([loadViewerSignals(userId), loadCandidates({ now, state, horizonDays })]);
   const friendsMap = await loadFriendsGoing(candidates.map((entry) => entry.event._id), signals.sharingFollowing);
   const filtered = sortEntries(filterEntries({ entries: candidates, now, friendsMap, ...filters }), sort, signals, friendsMap);
 
@@ -475,6 +492,42 @@ const listDiscover = async ({ userId, page = 1, limit = 20, sort = "match", stat
     hasNextPage: pageNumber < totalPages,
     hasPrevPage: pageNumber > 1,
   };
+};
+
+/* ---------- Calendar ---------- */
+
+/**
+ * How many events are on each day of a month, for the calendar's dots. An
+ * event counts on every day it runs, so a three-day festival marks three
+ * days; a recurring one marks each date it happens. Days already over are
+ * left out. Same city and scene filters as the rest of Discover.
+ */
+const calendarMonth = async ({ month, state, category, free, now = new Date() }) => {
+  const [year, monthNumber] = String(month).split("-").map(Number);
+  const monthStart = new Date(Date.UTC(year, monthNumber - 1, 1) - LAGOS_OFFSET_MS);
+  const monthEnd = new Date(Date.UTC(year, monthNumber, 1) - LAGOS_OFFSET_MS);
+  const lastDay = new Date(lagosDayStart(now).getTime() + (CALENDAR_MAX_DAYS_AHEAD + 1) * DAY_MS);
+  const days = [];
+
+  if (monthEnd > now && monthStart < lastDay) {
+    const end = monthEnd < lastDay ? monthEnd : lastDay;
+    const candidates = await loadCandidates({ now, state, horizonDays: daysUntil(end, now) });
+    /* Not filterEntries: its "all" stops at 30 days, and the calendar sets its own windows below. */
+    const kept = candidates.filter(
+      ({ event }) =>
+        (!free || priceFromNaira(event) === 0) &&
+        (!category || (event.categoryIds || []).map(toIdString).includes(String(category))),
+    );
+
+    for (let day = lagosDayStart(monthStart < now ? now : monthStart); day < end; day = new Date(day.getTime() + DAY_MS)) {
+      const dayEnd = new Date(day.getTime() + DAY_MS);
+      const from = day < now ? now : day;
+      const events = new Set(kept.filter(({ occurrence }) => overlaps(occurrence, from, dayEnd)).map(({ event }) => toIdString(event._id)));
+      if (events.size) days.push({ date: lagosDateKey(day), count: events.size });
+    }
+  }
+
+  return { month: `${year}-${String(monthNumber).padStart(2, "0")}`, today: lagosDateKey(now), days };
 };
 
 /* ---------- Vera ---------- */
@@ -703,6 +756,7 @@ module.exports = {
   getHome,
   getTrending,
   listDiscover,
+  calendarMonth,
   getMapPins,
   getBusiestHours,
   searchForVera,

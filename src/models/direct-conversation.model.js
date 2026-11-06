@@ -1,5 +1,7 @@
 const { Schema, model } = require("mongoose");
 
+const MAX_GROUP_PARTICIPANTS = 12;
+
 const directConversationSchema = new Schema(
   {
     directKey: {
@@ -8,6 +10,30 @@ const directConversationSchema = new Schema(
       unique: true,
       index: true,
       trim: true,
+    },
+    /* "group" is a Together group's chat: its key is `together:<groupId>`,
+       it is named after the event, and it can hold more than two people. */
+    kind: {
+      type: String,
+      enum: ["direct", "group"],
+      default: "direct",
+      index: true,
+    },
+    title: {
+      type: String,
+      trim: true,
+      maxlength: 160,
+      default: "",
+    },
+    eventId: {
+      type: Schema.Types.ObjectId,
+      ref: "Event",
+      default: null,
+    },
+    togetherGroupId: {
+      type: Schema.Types.ObjectId,
+      ref: "TogetherGroup",
+      default: null,
     },
     participants: {
       type: [
@@ -19,8 +45,11 @@ const directConversationSchema = new Schema(
       ],
       required: true,
       validate: {
-        validator: (value) => Array.isArray(value) && value.length === 2,
-        message: "Direct conversation must have exactly two participants",
+        validator: function validateParticipants(value) {
+          if (!Array.isArray(value)) return false;
+          return this.kind === "group" ? value.length >= 1 && value.length <= MAX_GROUP_PARTICIPANTS : value.length === 2;
+        },
+        message: "A direct conversation has exactly two participants; a group has up to twelve",
       },
     },
     createdByUserId: {
@@ -111,7 +140,7 @@ function autoNormalizeParticipants(schema) {
         .filter(Boolean),
     )].sort();
 
-    if (!this.directKey && this.participants.length === 2) {
+    if (!this.directKey && this.kind !== "group" && this.participants.length === 2) {
       this.directKey = `${this.participants[0]}:${this.participants[1]}`;
     }
   });
@@ -120,3 +149,4 @@ function autoNormalizeParticipants(schema) {
 const DirectConversation = model("DirectConversation", directConversationSchema);
 
 module.exports = DirectConversation;
+module.exports.MAX_GROUP_PARTICIPANTS = MAX_GROUP_PARTICIPANTS;

@@ -5,6 +5,9 @@ const User = require("../models/user.model");
 const UserSession = require("../models/user-session.model");
 const { signAccessToken, signRefreshToken } = require("../utils/jwt");
 
+/* Lazy: keeps the mail templates out of the auth path's load order. */
+const transactionalEmails = () => require("./transactional-email.service");
+
 const hashRefreshToken = (refreshToken) =>
   crypto.createHash("sha256").update(String(refreshToken || "")).digest("hex");
 
@@ -42,9 +45,17 @@ const signTokens = (userId, sessionId) => {
 
 /** A new signed-in device: its own session and its own tokens. */
 const createSession = async ({ userId, context = {} }) => {
+  const device = describeDevice(context);
+  /* Only a device this account hasn't used before is worth an alert; a brand-new
+     account's first sign-in, or signing back in on your own phone, isn't. */
+  const [signedInBefore, knownDevice] = await Promise.all([
+    UserSession.exists({ userId }),
+    UserSession.exists({ userId, deviceName: device.deviceName, platform: device.platform }),
+  ]);
+
   const session = new UserSession({
     userId,
-    ...describeDevice(context),
+    ...device,
     lastIp: String(context.ip || "").slice(0, 64),
     refreshTokenHash: "pending",
     expiresAt: new Date(),
@@ -53,6 +64,14 @@ const createSession = async ({ userId, context = {} }) => {
   session.refreshTokenHash = hashRefreshToken(tokens.refreshToken);
   session.expiresAt = expiryOf(tokens.refreshToken);
   await session.save();
+
+  if (signedInBefore && !knownDevice) {
+    void transactionalEmails().newSignIn(userId, {
+      deviceName: device.deviceName,
+      platform: device.platform,
+      signedInAt: session.createdAt || new Date(),
+    });
+  }
 
   return { ...tokens, sessionId: String(session._id) };
 };

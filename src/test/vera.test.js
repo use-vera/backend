@@ -236,6 +236,56 @@ describe("talking to vera", () => {
     expect(parsed.note).toMatch(/across their city/);
   });
 
+  test("calendar busy times flag clashes, reach the model as free/busy only, and are ignored when switched off", async () => {
+    const host = await createUser();
+    const me = await createUser();
+    const clash = await createEvent({ organizerUserId: host._id, name: "Clash Night", startsAt: future(3), endsAt: future(6) });
+    await createEvent({ organizerUserId: host._id, name: "Free Night", startsAt: future(30), endsAt: future(33) });
+    const busy = [{ start: future(2).toISOString(), end: future(4).toISOString() }];
+
+    let system = "";
+    let toolOutput = "";
+    const capture = (input) => {
+      toolOutput = input.messages[input.messages.length - 1].content;
+      return call("show_picks", { picks: [{ eventId: String(clash._id), why: "Good one" }] });
+    };
+
+    /* Off by default: the times are dropped, whatever the phone sends. */
+    script((input) => {
+      system = input.system;
+      return call("search_events", { when: "week" });
+    }, capture, say("ok"));
+    let res = await send(me, { text: "this week?", busy });
+    expect(system).not.toMatch(/Calendar/);
+    expect(toolOutput).not.toContain("clashesWithCalendar");
+    expect(res.body.data.message.inputs).not.toContain("Your calendar");
+
+    await VeraSettings.updateOne({ userId: me._id }, { $set: { "sees.calendar": true } });
+    script((input) => {
+      system = input.system;
+      return call("search_events", { when: "week" });
+    }, capture, say('"Clash Night" clashes with your calendar.'));
+    res = await send(me, { text: "this week?", busy });
+
+    expect(system).toMatch(/Calendar, free\/busy only/);
+    expect(system).toMatch(/evening: busy/);
+    const events = Object.fromEntries(JSON.parse(toolOutput).events.map((event) => [event.name, event]));
+    expect(events["Clash Night"].clashesWithCalendar).toBe(true);
+    expect(events["Free Night"].clashesWithCalendar).toBeUndefined();
+    expect(res.body.data.message.inputs).toContain("Your calendar");
+    expect(res.body.data.message.picks[0]).toMatchObject({ name: "Clash Night", clashesWithCalendar: true });
+
+    /* Only the flag is kept; the busy times themselves are never saved. */
+    const saved = await VeraMessage.find({ userId: me._id }).lean();
+    expect(JSON.stringify(saved)).not.toContain(busy[0].start);
+  });
+
+  test("busy times must be plain start/end pairs", async () => {
+    const me = await createUser();
+    const res = await send(me, { text: "hi", busy: [{ start: future(1).toISOString(), end: future(2).toISOString(), title: "Dentist" }] });
+    expect(res.status).toBe(400);
+  });
+
   test("budget left this week shows as an input", async () => {
     const host = await createUser();
     const me = await createUser();

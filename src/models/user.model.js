@@ -134,6 +134,9 @@ const userSchema = new Schema(
        once, and purgedAt is set once everything else they made is erased. */
     deletedAt: { type: Date, default: null, index: true },
     purgedAt: { type: Date, default: null },
+    /* The address a deleted account had, kept only until the purge so the
+       "everything's erased" email has somewhere to go, then removed with it. */
+    deletionNoticeEmail: { type: String, default: "", select: false },
     /* A new sign-in email waiting on its emailed code. Only becomes the
        email once that code is entered. */
     pendingEmail: {
@@ -226,6 +229,11 @@ const userSchema = new Schema(
       default: null,
     },
     premiumExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    /* The expiry we last sent an "ending soon" email for, so each term gets one. */
+    premiumExpiryNoticeFor: {
       type: Date,
       default: null,
     },

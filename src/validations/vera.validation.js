@@ -33,6 +33,17 @@ const sendVeraMessageSchema = z
       })
       .strict()
       .optional(),
+    /* Free/busy from the phone's calendar: times only, never titles or places.
+       Used for this reply and never stored. */
+    busy: z
+      .array(
+        z
+          .object({ start: z.string().datetime({ offset: true }), end: z.string().datetime({ offset: true }) })
+          .strict()
+          .refine((block) => new Date(block.end) > new Date(block.start), { message: "A busy time must end after it starts" }),
+      )
+      .max(80)
+      .optional(),
   })
   .strict();
 

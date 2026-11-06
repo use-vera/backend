@@ -148,6 +148,8 @@ const env = {
   emailProvider: (process.env.EMAIL_PROVIDER || "none").trim().toLowerCase(),
   emailFrom: process.env.EMAIL_FROM || "Vera <no-reply@vera.app>",
   emailReplyTo: process.env.EMAIL_REPLY_TO || "",
+  /* Shown in every email's footer once set; leave empty until there's a real address. */
+  emailPostalAddress: (process.env.EMAIL_POSTAL_ADDRESS || "").trim(),
   resendApiKey: process.env.RESEND_API_KEY || "",
   resendBaseUrl: process.env.RESEND_BASE_URL || "https://api.resend.com",
   smtpUrl: process.env.SMTP_URL || "",
@@ -174,6 +176,8 @@ const env = {
   ),
   waitlistMonitorEnabled: toBoolean(process.env.WAITLIST_MONITOR_ENABLED, nodeEnv !== "test"),
   accountDeletionMonitorEnabled: toBoolean(process.env.ACCOUNT_DELETION_MONITOR_ENABLED, nodeEnv !== "test"),
+  premiumExpiryMonitorEnabled: toBoolean(process.env.PREMIUM_EXPIRY_MONITOR_ENABLED, nodeEnv !== "test"),
+  premiumExpiryMonitorTickMs: toNumber(process.env.PREMIUM_EXPIRY_MONITOR_TICK_MS, 60 * 60 * 1000),
   accountDeletionMonitorTickMs: toNumber(process.env.ACCOUNT_DELETION_MONITOR_TICK_MS, 60 * 60 * 1000),
   waitlistMonitorTickMs: toNumber(process.env.WAITLIST_MONITOR_TICK_MS, 2 * 60 * 1000),
   resalePayoutMonitorTickMs: toNumber(process.env.RESALE_PAYOUT_MONITOR_TICK_MS, 5 * 60 * 1000),

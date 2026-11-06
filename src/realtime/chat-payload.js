@@ -16,6 +16,10 @@ const buildEventChatSendPayload = (payload = {}) => ({
   mentionedUserIds: Array.isArray(payload.mentionedUserIds)
     ? payload.mentionedUserIds
     : undefined,
+  /* Checked and capped by event-mention.service, like the HTTP route. */
+  eventMentionIds: Array.isArray(payload.eventMentionIds)
+    ? payload.eventMentionIds
+    : undefined,
 });
 
 module.exports = { buildEventChatSendPayload };

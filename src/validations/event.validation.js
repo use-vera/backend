@@ -627,7 +627,16 @@ const discoverFilterFields = {
   category: objectIdSchema.optional(),
   runningAt: z.string().datetime({ offset: true }).optional(),
   state: z.string().trim().max(80).optional(),
+  /* One calendar day, "2026-11-14", Lagos time. Overrides "when". */
+  on: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, "Use a date like 2026-11-14").optional(),
 };
+
+const calendarMonthQuerySchema = z.object({
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use a month like 2026-11"),
+  state: z.string().trim().max(80).optional(),
+  category: objectIdSchema.optional(),
+  free: queryFlagSchema.optional(),
+});
 
 const discoverListQuerySchema = z.object({
   ...discoverFilterFields,
@@ -807,6 +816,8 @@ const eventChatMessageBodySchema = z
     /* Zod strips what it does not declare, so an undeclared field here is a
        basket of mentions silently dropped between composer and server. */
     mentionedUserIds: z.array(objectIdSchema).max(50).optional(),
+    /* "#Event" links picked in the composer; the server keeps only real ones. */
+    eventMentionIds: z.array(objectIdSchema).max(10).optional(),
   })
   .superRefine((value, ctx) => {
     const hasMessage = Boolean(String(value.message || "").trim());
@@ -955,6 +966,7 @@ module.exports = {
   listSavedEventsQuerySchema,
   importSavedEventsSchema,
   discoverListQuerySchema,
+  calendarMonthQuerySchema,
   trendingQuerySchema,
   mapPinsQuerySchema,
   addOnRedeemParamsSchema,

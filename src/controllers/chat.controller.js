@@ -1,4 +1,5 @@
 const asyncHandler = require("../utils/async-handler");
+const { searchMentionableEvents } = require("../services/event-mention.service");
 const {
   createOrGetDirectConversation,
   listDirectMessages,
@@ -26,6 +27,11 @@ const listChatThreadsController = asyncHandler(async (req, res) => {
     message: "Chat threads fetched",
     data: result,
   });
+});
+
+const searchEventMentionsController = asyncHandler(async (req, res) => {
+  const items = await searchMentionableEvents({ search: req.query.search });
+  res.status(200).json({ success: true, message: "Events fetched", data: { items } });
 });
 
 const discoverChatUsersController = asyncHandler(async (req, res) => {
@@ -158,5 +164,6 @@ module.exports = {
   listDirectMessagesController,
   sendDirectMessageController,
   updateDirectMessageController,
+  searchEventMentionsController,
   deleteDirectMessageController,
 };

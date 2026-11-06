@@ -24,6 +24,8 @@ const { applyChargeback } = require("../services/chargeback.service");
 const getWalletSummaryController = asyncHandler(async (req, res) => {
   const result = await getWalletSummary(req.auth.userId);
 
+  console.log(result, "Wallet Summary Result");
+
   res.status(200).json({
     success: true,
     message: "Wallet fetched",
@@ -60,7 +62,9 @@ const getWalletTransactionController = asyncHandler(async (req, res) => {
 });
 
 const runSettlementController = asyncHandler(async (req, res) => {
-  const result = await triggerManualSettlement({ actorUserId: req.auth.userId });
+  const result = await triggerManualSettlement({
+    actorUserId: req.auth.userId,
+  });
 
   res.status(200).json({
     success: true,
@@ -127,11 +131,15 @@ const listResaleEarningsController = asyncHandler(async (req, res) => {
 });
 
 const deletePayoutAccountController = asyncHandler(async (req, res) => {
-  const result = await deletePayoutAccount({ organizerUserId: req.auth.userId });
+  const result = await deletePayoutAccount({
+    organizerUserId: req.auth.userId,
+  });
 
   res.status(200).json({
     success: true,
-    message: result.deleted ? "Payout account removed" : "No payout account to remove",
+    message: result.deleted
+      ? "Payout account removed"
+      : "No payout account to remove",
     data: result,
   });
 });

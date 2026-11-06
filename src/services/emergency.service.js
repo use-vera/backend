@@ -371,7 +371,7 @@ const getEmergencyDetail = async ({ emergencyId, actorUserId }) => {
 
   const reports = await EmergencyReport.find({ emergencyId: emergency._id })
     .sort({ createdAt: -1 })
-    .populate("attendeeUserId", "fullName email avatarUrl");
+    .populate("attendeeUserId", "fullName email avatarUrl verificationBadge");
 
   return {
     emergency,

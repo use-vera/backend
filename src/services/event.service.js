@@ -12,6 +12,7 @@ const CheckInDevice = require("../models/check-in-device.model");
 const EventRating = require("../models/event-rating.model");
 const EventCenter = require("../models/event-center.model");
 const EventChatMessage = require("../models/event-chat-message.model");
+const { resolveEventMentions, keepMentionsStillInText } = require("./event-mention.service");
 const {
   mentionsEveryone,
   listEventAudience,
@@ -24,6 +25,8 @@ const EventPostComment = require("../models/event-post-comment.model");
 const EventReminderPreference = require("../models/event-reminder-preference.model");
 const TicketResaleBid = require("../models/ticket-resale-bid.model");
 const TicketHold = require("../models/ticket-hold.model");
+/* Lazy: avoids loading the mail templates while event.service itself is loading. */
+const transactionalEmails = () => require("./transactional-email.service");
 const addOnService = require("./event-add-on.service");
 const promoCodeService = require("./promo-code.service");
 const EventAddOnPurchase = require("../models/event-add-on-purchase.model");
@@ -556,6 +559,18 @@ const resolveOccurrenceWindow = (event, referenceAt) => {
     endsAt: new Date(nextStart.getTime() + duration),
   };
 };
+
+/**
+ * Whether the event has nothing left to go to. A one-off is over once it
+ * ends; a recurring event only once its last date has ended, not its first.
+ */
+const hasEventEnded = (event, now = new Date()) => {
+  const occurrence = resolveOccurrenceWindow(event, now);
+  return !occurrence || occurrence.endsAt.getTime() <= now.getTime();
+};
+
+/** When the current (or next) date ends: the event's own end for a one-off. */
+const currentOccurrenceEndsAt = (event, now = new Date()) => resolveOccurrenceWindow(event, now)?.endsAt || null;
 
 const applyEventFilters = ({
   events,
@@ -2221,6 +2236,7 @@ const createPaymentAttemptForCheckout = async ({
   ticketId = null,
   resaleSourceTicketId = null,
   acceptedBidId = null,
+  togetherShareId = null,
   amountKobo,
   callbackUrl = "",
   email,
@@ -2240,6 +2256,7 @@ const createPaymentAttemptForCheckout = async ({
     ticketId,
     resaleSourceTicketId,
     acceptedBidId,
+    togetherShareId,
     amountKobo: Math.max(1, Math.round(Number(amountKobo || 0))),
     currency: "NGN",
     callbackUrl: normalizedCallbackUrl,
@@ -7528,6 +7545,14 @@ const purchaseResaleTicket = async ({
   );
 
   if (sellerUserId) {
+    const soldEvent = ticket.eventId && typeof ticket.eventId === "object" ? ticket.eventId : await Event.findById(ticket.eventId).select("name").lean();
+    void transactionalEmails().resaleSold(sellerUserId, {
+      eventName: soldEvent?.name || "your event",
+      amountNaira: saleAmountNaira,
+      quantity: listedQuantity,
+      payoutDelayHours: env.resalePayoutDelayHours,
+    });
+
     void createNotification({
       userId: sellerUserId,
       type: "ticket.resale.completed",
@@ -8195,6 +8220,21 @@ const processPaystackWebhookEvent = async (payload) => {
       };
     }
 
+    if (paymentAttempt.kind === "together_share") {
+      await require("./together.service").finalizeSharePaymentAttempt({
+        paymentAttempt,
+        paymentData,
+      });
+
+      return {
+        processed: true,
+        event: eventName,
+        kind: "together_share",
+        reference: paymentReference,
+        paymentAttemptId: String(paymentAttempt._id),
+      };
+    }
+
     if (paymentAttempt.kind === "event_feature") {
       await finalizeEventFeaturePaymentAttempt({
         paymentAttempt,
@@ -8371,8 +8411,8 @@ const listEventTickets = async ({
 
   const [items, totalItems] = await Promise.all([
     EventTicket.find(query)
-      .populate("buyerUserId", "fullName email title avatarUrl")
-      .populate("usedByUserId", "fullName email title avatarUrl")
+      .populate("buyerUserId", "fullName email title avatarUrl verificationBadge")
+      .populate("usedByUserId", "fullName email title avatarUrl verificationBadge")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNumber),
@@ -8945,6 +8985,12 @@ const createEventChatMessage = async ({ eventId, actorUserId, payload }) => {
         actorUserId,
       });
 
+  /* Always the server's list, never whatever the client put in metadata. */
+  messageInput.metadata.eventMentions = await resolveEventMentions({
+    message: messageInput.message,
+    candidateEventIds: payload?.eventMentionIds,
+  });
+
   const message = await EventChatMessage.create({
     eventId: event._id,
     userId: actorUserId,
@@ -9012,7 +9058,7 @@ const updateEventChatMessage = async ({
   const existing = await EventChatMessage.findOne({
     _id: messageId,
     eventId: event._id,
-  }).select("_id userId messageType isDeleted");
+  }).select("_id userId messageType isDeleted metadata");
 
   if (!existing) {
     throw new ApiError(404, "Chat message not found");
@@ -9043,6 +9089,8 @@ const updateEventChatMessage = async ({
     {
       $set: {
         message: normalized.message,
+        /* An edit that removes "#Event" drops its link with it. */
+        "metadata.eventMentions": keepMentionsStillInText(existing.metadata?.eventMentions, normalized.message),
         editedAt: new Date(),
       },
     },
@@ -9543,6 +9591,7 @@ module.exports = {
   EVENT_CARD_POPULATE,
   presentEventCards,
   createPaymentAttemptForCheckout,
+  ensureEventCanBeViewedBy,
   createEvent,
   searchEventCenters,
   listEvents,
@@ -9626,6 +9675,8 @@ module.exports = {
   haversineDistanceMeters,
   toCheckInWindow,
   resolveOccurrenceWindow,
+  hasEventEnded,
+  currentOccurrenceEndsAt,
   resolveEventSalePhase,
   normalizeRecurrence,
   expireAcceptedResaleOfferById,

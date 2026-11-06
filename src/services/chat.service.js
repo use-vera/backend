@@ -9,6 +9,7 @@ const EventChatMessage = require("../models/event-chat-message.model");
 const DirectConversation = require("../models/direct-conversation.model");
 const DirectMessage = require("../models/direct-message.model");
 const { normalizeMessagePayload } = require("../utils/chat-content");
+const { resolveEventMentions, keepMentionsStillInText } = require("./event-mention.service");
 const { createNotification } = require("./notification.service");
 
 const objectIdRegex = /^[a-fA-F0-9]{24}$/;
@@ -108,6 +109,12 @@ const repairConversationParticipants = async (conversation) => {
   }
 
   const idsFromParticipants = normalizeParticipantIds(conversation.participants);
+
+  /* A Together group's key names the group, not two people: nothing to repair. */
+  if (String(conversation.directKey || "").startsWith("together:")) {
+    return idsFromParticipants;
+  }
+
   const idsFromDirectKey = parseParticipantIdsFromDirectKey(conversation.directKey);
   const canonicalIds = idsFromDirectKey.length === 2
     ? idsFromDirectKey
@@ -168,7 +175,7 @@ const hydrateConversationUsers = async (conversation) => {
 
 const hydrateConversationById = async (conversationId) => {
   const rawConversation = await DirectConversation.findById(conversationId)
-    .select("_id directKey participants createdByUserId lastMessageText lastMessageAt lastMessageSenderUserId unreadCountByUser lastReadAtByUser lastNudgeAtByUser lastNudgedCountByUser");
+    .select("_id directKey kind title eventId togetherGroupId participants createdByUserId lastMessageText lastMessageAt lastMessageSenderUserId unreadCountByUser lastReadAtByUser lastNudgeAtByUser lastNudgedCountByUser");
 
   if (!rawConversation) {
     return null;
@@ -177,7 +184,7 @@ const hydrateConversationById = async (conversationId) => {
   await repairConversationParticipants(rawConversation);
 
   const refreshedConversation = await DirectConversation.findById(rawConversation._id)
-    .select("_id directKey participants createdByUserId lastMessageText lastMessageAt lastMessageSenderUserId unreadCountByUser lastReadAtByUser lastNudgeAtByUser lastNudgedCountByUser createdAt updatedAt");
+    .select("_id directKey kind title eventId togetherGroupId participants createdByUserId lastMessageText lastMessageAt lastMessageSenderUserId unreadCountByUser lastReadAtByUser lastNudgeAtByUser lastNudgedCountByUser createdAt updatedAt");
 
   if (!refreshedConversation) {
     return null;
@@ -245,6 +252,7 @@ const toUserPreview = (user) => {
     email: user.email || "",
     avatarUrl: user.avatarUrl || "",
     title: user.title || "",
+    verificationBadge: user.verificationBadge || undefined,
   };
 };
 
@@ -262,7 +270,7 @@ const ensureConversationParticipant = async ({
   withParticipants = false,
 }) => {
   const conversation = await DirectConversation.findById(conversationId)
-    .select("_id directKey participants");
+    .select("_id directKey kind participants");
 
   if (!conversation) {
     throw new ApiError(404, "Conversation not found");
@@ -445,9 +453,10 @@ const resolveDirectEventCard = async ({ eventId }) => {
   }
 
   const event = await Event.findById(normalizedEventId)
-    .select("_id name startsAt address imageUrl status");
+    .select("_id name startsAt endsAt address imageUrl status");
 
-  if (!event) {
+  /* A draft is the host's alone: sharing one would leak its name and date. */
+  if (!event || event.status === "draft") {
     throw new ApiError(404, "Event not found");
   }
 
@@ -458,6 +467,7 @@ const resolveDirectEventCard = async ({ eventId }) => {
     address: event.address || "",
     imageUrl: event.imageUrl || "",
     status: event.status || "published",
+    endsAt: event.endsAt || null,
   };
 };
 
@@ -590,6 +600,12 @@ const buildDirectMessageWrite = async ({
       eventId: metadata.eventId,
     });
   }
+
+  /* Always the server's list, never whatever the client put in metadata. */
+  metadata.eventMentions = await resolveEventMentions({
+    message: normalized.message,
+    candidateEventIds: payload?.eventMentionIds,
+  });
 
   const replyPreview = await resolveReplyMessage({
     conversationId,
@@ -752,10 +768,13 @@ const sendDirectMessage = async ({
     withParticipants: true,
   });
 
-  /* A conversation from before a block stays readable but goes quiet. */
-  const otherParticipant = (conversation.participants || [])
-    .map((participant) => String(participant?._id || participant || ""))
-    .find((id) => id && id !== String(actorUserId));
+  /* A conversation from before a block stays readable but goes quiet. Groups
+     are checked when people are invited, so this is for one-to-one chats. */
+  const otherParticipant = conversation.kind === "group"
+    ? null
+    : (conversation.participants || [])
+        .map((participant) => String(participant?._id || participant || ""))
+        .find((id) => id && id !== String(actorUserId));
 
   if (otherParticipant && (await isBlockedEitherWay(actorUserId, otherParticipant))) {
     throw new ApiError(403, "You can't message this person.", null, "USER_BLOCKED");
@@ -826,7 +845,7 @@ const sendDirectMessage = async ({
   );
 
   const refreshedConversation = await DirectConversation.findById(conversation._id)
-    .select("_id directKey participants createdByUserId lastMessageText lastMessageAt lastMessageSenderUserId unreadCountByUser lastReadAtByUser lastNudgeAtByUser lastNudgedCountByUser createdAt updatedAt");
+    .select("_id directKey kind title eventId togetherGroupId participants createdByUserId lastMessageText lastMessageAt lastMessageSenderUserId unreadCountByUser lastReadAtByUser lastNudgeAtByUser lastNudgedCountByUser createdAt updatedAt");
 
   if (!refreshedConversation) {
     throw new ApiError(404, "Conversation not found");
@@ -881,7 +900,7 @@ const updateDirectMessage = async ({
   const existing = await DirectMessage.findOne({
     _id: messageId,
     conversationId: conversation._id,
-  }).select("_id senderUserId messageType isDeleted");
+  }).select("_id senderUserId messageType isDeleted metadata");
 
   if (!existing) {
     throw new ApiError(404, "Message not found");
@@ -912,6 +931,8 @@ const updateDirectMessage = async ({
     {
       $set: {
         message: normalized.message,
+        /* An edit that removes "#Event" drops its link with it. */
+        "metadata.eventMentions": keepMentionsStillInText(existing.metadata?.eventMentions, normalized.message),
         editedAt: new Date(),
       },
     },
@@ -990,7 +1011,7 @@ const listChatThreads = async ({
   const directConversationRows = await DirectConversation.find({
     participants: actorUserId,
   })
-    .select("_id participants lastMessageText lastMessageAt lastMessageSenderUserId unreadCountByUser updatedAt")
+    .select("_id kind title eventId togetherGroupId participants lastMessageText lastMessageAt lastMessageSenderUserId unreadCountByUser updatedAt")
     .sort({ lastMessageAt: -1, updatedAt: -1 })
     .limit(400)
     .lean();
@@ -999,10 +1020,16 @@ const listChatThreads = async ({
 
   for (const row of directConversationRows) {
     const participantIds = normalizeParticipantIds(row.participants);
-    const otherId = participantIds.find((value) => value !== String(actorUserId));
 
-    if (otherId) {
-      referencedUserIds.add(otherId);
+    /* A group shows everyone's faces; a DM only the other person's. */
+    if (row.kind === "group") {
+      participantIds.forEach((id) => referencedUserIds.add(id));
+    } else {
+      const otherId = participantIds.find((value) => value !== String(actorUserId));
+
+      if (otherId) {
+        referencedUserIds.add(otherId);
+      }
     }
 
     const senderId = normalizeObjectIdLike(row.lastMessageSenderUserId);
@@ -1042,6 +1069,10 @@ const listChatThreads = async ({
     ? directConversationsRaw.filter((conversation) => {
         const pattern = new RegExp(escapeRegex(trimmedSearch), "i");
         const other = conversation.otherParticipant;
+
+        if (conversation.kind === "group") {
+          return pattern.test(conversation.title || "");
+        }
 
         return Boolean(
           other &&
@@ -1106,11 +1137,33 @@ const listChatThreads = async ({
   const directThreads = directConversations.map((conversation) => {
     const otherParticipant = conversation.otherParticipant;
 
+    if (conversation.kind === "group") {
+      return {
+        _id: `group:${conversation._id}`,
+        threadType: "group",
+        conversationId: String(conversation._id),
+        eventId: conversation.eventId ? String(conversation.eventId) : null,
+        togetherGroupId: conversation.togetherGroupId ? String(conversation.togetherGroupId) : null,
+        title: conversation.title || "Group chat",
+        verified: false,
+        subtitle: "",
+        avatarUrl: "",
+        participants: (conversation.participants || []).map(toUserPreview).filter(Boolean),
+        event: null,
+        lastMessageText: conversation.lastMessageText || "",
+        lastMessageAt: conversation.lastMessageAt || conversation.updatedAt,
+        lastMessageSender: toUserPreview(conversation.lastMessageSenderUser),
+        unreadCount: Math.max(0, Number(conversation.unreadCount || 0)),
+      };
+    }
+
     return {
       _id: `direct:${conversation._id}`,
       threadType: "direct",
       conversationId: String(conversation._id),
       title: otherParticipant?.fullName || "Direct chat",
+      /* So the chat list can show the person's verified tick next to their name. */
+      verified: Boolean(otherParticipant?.verificationBadge?.verified),
       subtitle: otherParticipant?.title || "",
       avatarUrl: otherParticipant?.avatarUrl || "",
       participants: (conversation.participants || []).map(toUserPreview).filter(Boolean),

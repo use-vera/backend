@@ -25,6 +25,8 @@ const sendDirectMessageSchema = z
     metadata: z.record(z.string(), z.any()).optional(),
     replyToMessageId: objectIdSchema.optional(),
     forwardedFromMessageId: objectIdSchema.optional(),
+    /* "#Event" links picked in the composer; the server keeps only real ones. */
+    eventMentionIds: z.array(objectIdSchema).max(10).optional(),
   })
   .superRefine((value, ctx) => {
     const hasMessage = Boolean(String(value.message || "").trim());
@@ -38,6 +40,10 @@ const sendDirectMessageSchema = z
       });
     }
   });
+
+const eventMentionQuerySchema = z.object({
+  search: z.string().trim().max(60).optional(),
+});
 
 const messageIdParamsSchema = z.object({
   conversationId: objectIdSchema,
@@ -55,4 +61,5 @@ module.exports = {
   messageIdParamsSchema,
   sendDirectMessageSchema,
   updateDirectMessageSchema,
+  eventMentionQuerySchema,
 };

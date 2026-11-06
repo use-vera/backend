@@ -69,6 +69,7 @@ const {
   listSavedEventsQuerySchema,
   importSavedEventsSchema,
   discoverListQuerySchema,
+  calendarMonthQuerySchema,
   trendingQuerySchema,
   mapPinsQuerySchema,
   listTicketResaleBidsQuerySchema,
@@ -192,6 +193,7 @@ const {
   getHomeController,
   getTrendingController,
   listDiscoverController,
+  getCalendarMonthController,
   getMapPinsController,
   getBusiestHoursController,
 } = require("../controllers/discover.controller");
@@ -233,6 +235,7 @@ const receiptEmailLimit = rateLimit({
 router.get("/discover/home", getHomeController);
 router.get("/discover/trending", validateQuery(trendingQuerySchema), getTrendingController);
 router.get("/discover/list", validateQuery(discoverListQuerySchema), listDiscoverController);
+router.get("/discover/calendar", validateQuery(calendarMonthQuerySchema), getCalendarMonthController);
 router.get("/map/pins", validateQuery(mapPinsQuerySchema), getMapPinsController);
 router.get("/:eventId/busiest-hours", validateParams(eventIdParamsSchema), getBusiestHoursController);
 router.get("/saved", validateQuery(listSavedEventsQuerySchema), listSavedEventsController);

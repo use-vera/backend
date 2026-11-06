@@ -5,6 +5,7 @@ const Event = require("../models/event.model");
 const { initiatePaystackTransfer, verifyPaystackTransfer } = require("./paystack.service");
 const { returnPaystackPayment, readPaystackError } = require("./payment-refund.service");
 const { createNotification } = require("./notification.service");
+const transactionalEmails = require("./transactional-email.service");
 
 const HOUR_MS = 60 * 60 * 1000;
 /* After this many failed transfers a payout stops retrying and waits for a
@@ -85,6 +86,12 @@ const markPaid = async (sale) => {
   );
 
   if (updated) {
+    void transactionalEmails.resalePayoutPaid(updated.sellerUserId, {
+      amountKobo: updated.amountKobo,
+      bankName: updated.paidToBankName,
+      last4: updated.paidToAccountLast4,
+    });
+
     notify({
       userId: updated.sellerUserId,
       type: "ticket.resale.payout_paid",
@@ -118,6 +125,8 @@ const payOutSale = async (sale, now) => {
       );
 
       if (moved) {
+        void transactionalEmails.resalePayoutNeedsAccount(moved.sellerUserId, { amountKobo: moved.amountKobo });
+
         notify({
           userId: moved.sellerUserId,
           type: "ticket.resale.payout_needs_account",
@@ -311,6 +320,14 @@ const cancelResaleSalesForEvent = async (event) => {
           },
         },
       );
+
+      const cancelledEvent = await Event.findById(claimed.eventId).select("name").lean();
+      void transactionalEmails.refundIssued(claimed.sellerUserId, {
+        eventName: cancelledEvent?.name || "your event",
+        refundNaira: Math.round(claimed.sellerPaidKobo / 100),
+        reason: "The event was cancelled, so your resale is off.",
+        what: "the ticket you were reselling",
+      });
 
       notify({
         userId: claimed.sellerUserId,

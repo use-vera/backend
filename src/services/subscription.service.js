@@ -2,6 +2,7 @@ const ApiError = require("../utils/api-error");
 const env = require("../config/env");
 const User = require("../models/user.model");
 const PaymentAttempt = require("../models/payment-attempt.model");
+const transactionalEmails = require("./transactional-email.service");
 const {
   generatePaystackReference,
   initializePaystackTransaction,
@@ -240,6 +241,7 @@ const finalizePremiumSubscriptionPaymentAttempt = async ({
     return subscription;
   }
 
+  const renewed = Boolean(user.premiumExpiresAt && new Date(user.premiumExpiresAt) > now);
   const subscription = await activatePremiumForUser({
     user,
     now,
@@ -252,6 +254,13 @@ const finalizePremiumSubscriptionPaymentAttempt = async ({
   paymentAttempt.fulfilledAt = paymentAttempt.fulfilledAt || now;
   paymentAttempt.failureReason = "";
   await paymentAttempt.save();
+
+  void transactionalEmails.premiumReceipt(user._id, {
+    amountNaira: PREMIUM_PRICE_NAIRA,
+    activeUntil: user.premiumExpiresAt,
+    renewed,
+    reference: paymentAttempt.reference,
+  });
 
   return subscription;
 };

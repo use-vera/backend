@@ -15,6 +15,7 @@ const emergencyRoutes = require("./emergency.routes");
 const vendorRoutes = require("./vendor.routes");
 const vendorOrderRoutes = require("./vendor-order.routes");
 const veraRoutes = require("./vera.routes");
+const togetherRoutes = require("./together.routes");
 
 const router = express.Router();
 
@@ -34,5 +35,6 @@ router.use("/emergencies", emergencyRoutes);
 router.use("/vendors", vendorRoutes);
 router.use("/vendor-orders", vendorOrderRoutes);
 router.use("/vera", veraRoutes);
+router.use("/together", togetherRoutes);
 
 module.exports = router;

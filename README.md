@@ -52,7 +52,8 @@ Default bind host is `0.0.0.0` so mobile devices on the same network can access 
 - `PAYSTACK_DEV_BYPASS`: if `true` in development, paid tickets are auto-marked paid when Paystack key is not set
 - `EMAIL_PROVIDER`: `resend`, `smtp`, or `none` (default `none`: mail is rendered and logged, never sent)
 - `EMAIL_FROM`: sender for outbound mail (default `Vera <no-reply@vera.app>`)
-- `EMAIL_REPLY_TO`: optional default reply-to address
+- `EMAIL_REPLY_TO`: optional default reply-to address (also the footer's Help link)
+- `EMAIL_POSTAL_ADDRESS`: optional company address shown in every email footer; leave empty until there is a real one
 - `RESEND_API_KEY`: required when `EMAIL_PROVIDER=resend`
 - `RESEND_BASE_URL`: Resend API base URL (default `https://api.resend.com`)
 - `SMTP_URL`: connection string, required when `EMAIL_PROVIDER=smtp` (also run `npm i nodemailer`)
@@ -61,6 +62,7 @@ Default bind host is `0.0.0.0` so mobile devices on the same network can access 
 - `LLM_MODEL`: model name (default `qwen2.5:3b`; it must support tool calling)
 - `OLLAMA_BASE_URL`: where Ollama listens (default `http://127.0.0.1:11434`)
 - `LLM_TIMEOUT_MS`: how long to wait for one model reply (default `60000`)
+- `PREMIUM_EXPIRY_MONITOR_ENABLED` / `PREMIUM_EXPIRY_MONITOR_TICK_MS`: the hourly check that emails people 3 days before Premium ends (on by default outside tests)
 - `VERA_DAILY_FREE_MESSAGES`: messages a free account can send Vera per day (default `15`; Premium has no limit)
 
 If Atlas access is blocked, verify:

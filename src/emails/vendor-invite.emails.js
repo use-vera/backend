@@ -37,7 +37,7 @@ const termsRows = (terms = {}) => [
 
 /** Organizer invited a vendor. Goes to the vendor. */
 const vendorInvited = ({ event, vendor, organizer, terms = {}, inviteId }) => {
-  const heading = `${organizer.name} wants you at ${event.name}`;
+  const heading = `${organizer.name} wants you at ${event.name}.`;
   const cta = {
     href: absoluteUrl(`/vendors/events?invite=${inviteId}`),
     label: "See the invitation",
@@ -94,8 +94,8 @@ const vendorRespondedToInvite = ({
   eventId,
 }) => {
   const heading = accepted
-    ? `${vendor.businessName} is in for ${event.name}`
-    : `${vendor.businessName} can't make ${event.name}`;
+    ? `${vendor.businessName} is in for ${event.name}.`
+    : `${vendor.businessName} can't make ${event.name}.`;
   const cta = {
     href: absoluteUrl(`/organizer/events/${eventId}/vendors`),
     label: "Open your vendors",
@@ -137,7 +137,7 @@ const vendorRespondedToInvite = ({
 
 /** Vendor applied to an event. Goes to the organizer. */
 const vendorApplied = ({ event, vendor, eventId }) => {
-  const heading = `${vendor.businessName} wants to sell at ${event.name}`;
+  const heading = `${vendor.businessName} wants to sell at ${event.name}.`;
   const cta = {
     href: absoluteUrl(`/organizer/events/${eventId}/vendors`),
     label: "Review the application",
@@ -182,8 +182,8 @@ const vendorApplicationDecided = ({
   inviteId,
 }) => {
   const heading = accepted
-    ? `You're in for ${event.name}`
-    : `${organizer.name} passed on your application`;
+    ? `you're in for ${event.name}.`
+    : `${organizer.name} passed on your application.`;
   const cta = accepted
     ? {
         href: absoluteUrl(`/vendors/events?invite=${inviteId}`),
